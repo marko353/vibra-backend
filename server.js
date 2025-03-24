@@ -28,6 +28,9 @@ app.use(express.json());
 app.get("/", (req, res) => {
   res.send("Hello from Vercel!");
 });
+app.get("/test", (req, res) => {
+  res.send("Test endpoint, no authentication needed.");
+});
 
 // Konekcija sa MongoDB
 mongoose.connect(process.env.MONGO_URI)

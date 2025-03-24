@@ -1,4 +1,8 @@
 {
+    "scripts": {
+    "start": "node server.js",
+   
+  },
   "dependencies": {
     "@hookform/resolvers": "^3.10.0",
     "array-flatten": "^3.0.0",

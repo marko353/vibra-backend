@@ -25,6 +25,10 @@ app.use(cors({ origin: "*", methods: ["GET", "POST", "PUT", "DELETE"], allowedHe
 app.use(cookieParser());
 app.use(express.json());
 
+app.get("/", (req, res) => {
+  res.send("Hello from Vercel!");
+});
+
 // Konekcija sa MongoDB
 mongoose.connect(process.env.MONGO_URI)
   .then(() => console.log("✅ MongoDB Connected!!!"))

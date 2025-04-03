@@ -67,6 +67,14 @@ io.use((socket, next) => {
 
 io.on("connection", (socket) => {
     console.log("🟢 Novi korisnik povezan:", socket.id);
+    // U io.on("connection") dodajte:
+socket.on("typing", (userId) => {
+  const userSocket = onlineUsers.get(userId);
+  if (userSocket) {
+      // Šaljemo svima osim pošiljaocu
+      socket.broadcast.emit("typing", userId);
+  }
+});
 
     // Join event
     socket.on("join", (userId) => {

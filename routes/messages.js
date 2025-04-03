@@ -2,47 +2,78 @@ const express = require("express");
 const Message = require("../models/Message");
 const router = express.Router();
 
+// Middleware za logovanje
+router.use((req, res, next) => {
+    console.log(`[${new Date().toISOString()}] ${req.method} ${req.path}`);
+    next();
+});
+
 // Slanje poruke
 router.post("/send", async (req, res) => {
+    console.log("📩 Primljen zahtev za slanje poruke:", req.body);
+    
     try {
-        console.log("Primljen request:", req.body);
-
         const { senderId, receiverId, message } = req.body;
-        if (!senderId || !receiverId || !message || message.trim() === "") {
-            console.error("⚠️ Nedostaju obavezni podaci u poruci!");
-            return res.status(400).json({ error: "All fields (senderId, receiverId, message) are required." });
+        
+        if (!senderId || !receiverId || !message?.trim()) {
+            console.error("⚠️ Nedostaju obavezni podaci");
+            return res.status(400).json({ 
+                error: "Obavezni podaci: senderId, receiverId, message",
+                receivedData: req.body 
+            });
         }
 
-        const newMessage = new Message({ senderId, receiverId, message });
+        const newMessage = new Message({ 
+            senderId, 
+            receiverId, 
+            message: message.trim(),
+            createdAt: new Date()
+        });
+        
+        console.log("💾 Čuvanje poruke u bazi...");
         const savedMessage = await newMessage.save();
-        console.log(" Poruka uspešno sačuvana u bazi:", savedMessage);
-
+        
+        console.log("✅ Poruka sačuvana:", savedMessage);
         res.status(201).json(savedMessage);
     } catch (error) {
         console.error("❌ Greška pri slanju poruke:", error);
-        res.status(500).json({ error: "Error sending message" });
+        res.status(500).json({ 
+            error: "Greška na serveru",
+            details: error.message 
+        });
     }
 });
 
-// Dohvatanje svih poruka između dva korisnika
+// Dohvatanje razgovora
 router.get("/conversations/:userId/:receiverId", async (req, res) => {
+    console.log(`🔍 Preuzimanje razgovora između ${req.params.userId} i ${req.params.receiverId}`);
+    
     try {
         const { userId, receiverId } = req.params;
+        
+        console.log("🔎 Pretraga u bazi...");
         const messages = await Message.find({
             $or: [
                 { senderId: userId, receiverId: receiverId },
                 { senderId: receiverId, receiverId: userId },
             ],
         }).sort({ createdAt: 1 });
-
+        
+        console.log(`📄 Pronađeno ${messages.length} poruka`);
         res.json(messages);
     } catch (error) {
-        res.status(500).json({ error: "Error fetching messages" });
+        console.error("❌ Greška pri preuzimanju poruka:", error);
+        res.status(500).json({ 
+            error: "Greška pri preuzimanju poruka",
+            details: error.message 
+        });
     }
 });
 
-// Dohvatanje poslednje poruke sa svakim korisnikom
+// Dohvatanje poslednjih poruka
 router.get("/last/:userId", async (req, res) => {
+    console.log(`📨 Preuzimanje poslednjih poruka za korisnika ${req.params.userId}`);
+    
     try {
         const { userId } = req.params;
 
@@ -66,6 +97,8 @@ router.get("/last/:userId", async (req, res) => {
                     },
                     lastMessage: { $first: "$message" },
                     timestamp: { $first: "$createdAt" },
+                    senderId: { $first: "$senderId" },
+                    messageId: { $first: "$_id" }
                 },
             },
             {
@@ -73,11 +106,14 @@ router.get("/last/:userId", async (req, res) => {
             },
         ]);
 
-        console.log("Poslednje poruke:", lastMessages);
+        console.log(`📊 Vraćeno ${lastMessages.length} poslednjih razgovora`);
         res.status(200).json(lastMessages);
     } catch (error) {
-        console.error("Greška pri preuzimanju poslednjih poruka:", error);
-        res.status(500).json({ error: "Server error" });
+        console.error("❌ Greška pri preuzimanju poslednjih poruka:", error);
+        res.status(500).json({ 
+            error: "Server error",
+            details: error.message 
+        });
     }
 });
 

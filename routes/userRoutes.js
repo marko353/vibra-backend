@@ -2,7 +2,14 @@ const express = require('express');
 const multer = require('multer');
 const cloudinary = require('../config/cloudinaryConfig');
 const User = require('../models/User');
-const { login, updateProfile, deleteProfilePicture, updateLocation } = require('../controllers/userController');
+const { 
+    login, 
+    updateProfile, 
+    deleteProfilePicture, 
+    getProfileById, 
+    getProfile, 
+    getAllUsers 
+} = require('../controllers/userController');
 const authMiddleware = require("../middleware/authMiddleware");
 
 const router = express.Router();
@@ -12,13 +19,10 @@ const upload = multer({ storage });
 
 router.post("/login", login);
 
-// AŽURIRANO: Dodati logovi za proveru rute
-router.put('/update-location', authMiddleware, (req, res, next) => {
-    console.log('ROUTE: Ažuriranje lokacije - ruta je pogođena.');
-    next();
-}, updateLocation);
+// Ukloni /update-location, jer će se logika premestiti u update-profile
+// router.put('/update-location', authMiddleware, updateLocation); ❌
 
-// Upload profilne slike - ISPRAVLJENO: Naziv polja za Multer bi trebalo da bude "profilePicture"
+// Upload profilne slike
 router.post('/upload-profile-picture', authMiddleware, upload.single('profilePicture'), (req, res) => {
     if (!req.file) {
         return res.status(400).json({ message: "Nema slike za upload" });
@@ -116,6 +120,20 @@ router.delete('/delete-profile-picture', authMiddleware, async (req, res) => {
     }
 });
 
+// Dohvatanje profila trenutno ulogovanog korisnika
+router.get('/profile', authMiddleware, getProfile);
+
+// Dohvatanje profila po ID-u
+router.get('/:userId', authMiddleware, getProfileById);
+
+// Ažuriranje profila - ovo je najvažnija izmena, preusmerava na ađurirani kontroler
+// I dalje koristi updateProfile, ali sad updateProfile mora da prepozna tip unosa
+router.put('/update-profile', authMiddleware, updateProfile);
+
+// Dohvatanje svih korisnika
+router.get("/all-users", authMiddleware, getAllUsers);
+
+// Pomoćna funkcija za Cloudinary publicId
 function getCloudinaryPublicId(imageUrl) {
     try {
         const url = new URL(imageUrl);
@@ -127,67 +145,5 @@ function getCloudinaryPublicId(imageUrl) {
         return null;
     }
 }
-
-// Dohvatanje profila trenutno ulogovanog korisnika
-router.get('/profile', authMiddleware, async (req, res) => {
-    try {
-        const user = await User.findById(req.user.id);
-        if (!user) return res.status(404).json({ message: 'User not found' });
-        res.json(user);
-    } catch (error) {
-        res.status(500).json({ message: 'Server error' });
-    }
-});
-
-// Dohvatanje profila po ID-u
-router.get('/:userId', authMiddleware, async (req, res) => {
-    try {
-        const user = await User.findById(req.params.userId);
-        if (!user) return res.status(404).json({ message: 'Korisnik nije pronađen' });
-        res.json(user);
-    } catch (error) {
-        res.status(500).json({ message: 'Interna greška servera' });
-    }
-});
-
-// Ažuriranje profila
-router.put('/update-profile', authMiddleware, async (req, res) => {
-    try {
-        const userId = req.user.id;
-        const { field, value } = req.body; // <--- Uklonjen je objekat updates
-
-        if (!field || typeof value === 'undefined') {
-            return res.status(400).json({ message: 'Nevažeći podaci za ažuriranje.' });
-        }
-
-        const user = await User.findById(userId);
-        if (!user) return res.status(404).json({ message: 'Korisnik nije pronađen' });
-
-        // Ažuriranje samo jednog polja, sa dinamičkim ključem
-        user[field] = value;
-        await user.save();
-
-        return res.status(200).json({ message: 'Profil uspešno ažuriran' });
-    } catch (error) {
-        console.error("Greška pri ažuriranju profila:", error);
-        return res.status(500).json({ message: 'Interna greška servera' });
-    }
-});
-// Dohvatanje svih korisnika
-router.get("/all-users", authMiddleware, async (req, res) => {
-    try {
-        const users = await User.find({}, "fullName avatar _id profilePictures birthDate");
-        const updatedUsers = users.map(user => {
-            if (!user.avatar) {
-                user.avatar = "https://path/to/default-avatar.jpg";
-            }
-            return user;
-        });
-
-        res.json(updatedUsers);
-    } catch (error) {
-        res.status(500).json({ message: "Greška pri dohvaćanju korisnika" });
-    }
-});
 
 module.exports = router;

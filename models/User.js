@@ -2,7 +2,8 @@
 const { Schema, model } = require("mongoose");
 
 // Definišemo Mongoose šemu za korisnika
-const UserSchema = new Schema({
+const UserSchema = new Schema(
+  {
     // Osnovni podaci o autentifikaciji
     username: { type: String, unique: true },
     email: { type: String, required: true, unique: true },
@@ -15,7 +16,7 @@ const UserSchema = new Schema({
     // Podaci za profilne slike
     profilePictures: { type: [String], default: [] },
     avatar: { type: String },
-    
+
     // Podaci za "kartice" profila
     bio: { type: String, default: null },
     relationshipType: { type: String, default: null },
@@ -32,30 +33,34 @@ const UserSchema = new Schema({
     workout: { type: String, default: null },
     diet: { type: String, default: null },
     jobTitle: { type: String, default: null },
-    education: { type: [String], default: [] }, // ISPRAVLJENO: Sada je niz stringova
-    
-    
-    // -- AŽURIRANO: Lokacija i vidljivost --
-    location: { 
-        type: Object, // ISPRAVLJENO: Definisano kao Object
-        default: {
-            latitude: null,
-            longitude: null,
-            accuracy: null,
-            locationCity: null,
-        }
+    education: { type: [String], default: [] },
+
+    // Lokacija i vidljivost
+    location: {
+      type: Object,
+      default: {
+        latitude: null,
+        longitude: null,
+        accuracy: null,
+        locationCity: null,
+      },
     },
-    showLocation: { type: Boolean, default: false }, // Novo polje za kontrolu vidljivosti
-    // ------------------------------------
+    showLocation: { type: Boolean, default: false },
 
     gender: { type: String, default: null },
     sexualOrientation: { type: String, default: null },
 
+    // Swipe logika
+    likes: [{ type: Schema.Types.ObjectId, ref: "User" }],
+    dislikes: [{ type: Schema.Types.ObjectId, ref: "User" }],
+
     // Tokeni i timestampovi
     resetPasswordToken: { type: String },
     resetPasswordExpires: { type: Date },
-}, {
-    timestamps: true
-});
+  },
+  {
+    timestamps: true,
+  }
+);
 
 module.exports = model("User", UserSchema);

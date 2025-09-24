@@ -2,148 +2,180 @@ const express = require('express');
 const multer = require('multer');
 const cloudinary = require('../config/cloudinaryConfig');
 const User = require('../models/User');
-const { 
-    login, 
-    updateProfile, 
-    deleteProfilePicture, 
-    getProfileById, 
-    getProfile, 
-    getAllUsers 
+const {
+    login,
+    updateProfile,
+    deleteProfilePicture,
+    getProfileById,
+    getProfile,
+    getAllUsers,
+    getPotentialMatches,
+    swipeAction
 } = require('../controllers/userController');
 const authMiddleware = require("../middleware/authMiddleware");
 
 const router = express.Router();
-
 const storage = multer.memoryStorage();
 const upload = multer({ storage });
 
-router.post("/login", login);
+// ---------------- LOGIN ----------------
+router.post("/login", (req, res, next) => {
+    console.log("[Ruta] POST /api/user/login - Pokušaj logovanja");
+    next();
+}, login);
 
-// Ukloni /update-location, jer će se logika premestiti u update-profile
-// router.put('/update-location', authMiddleware, updateLocation); ❌
+// ---------------- UPLOAD PROFILE PICTURE ----------------
+router.post('/upload-profile-picture', authMiddleware, upload.single('profilePicture'), async (req, res) => {
+    console.log(`[Ruta] POST /api/user/upload-profile-picture - UserID: ${req.user?.id}`);
+    if (!req.file) return res.status(400).json({ message: "Nema slike za upload" });
 
-// Upload profilne slike
-router.post('/upload-profile-picture', authMiddleware, upload.single('profilePicture'), (req, res) => {
-    if (!req.file) {
-        return res.status(400).json({ message: "Nema slike za upload" });
-    }
+    const position = req.body.position ? parseInt(req.body.position) : null;
+    console.log("[Ruta] Pozicija slike:", position);
 
-    const stream = cloudinary.uploader.upload_stream(
-        { folder: "profile_pictures" },
-        async (error, result) => {
-            if (error) {
-                console.error("Greška prilikom slanja slike:", error);
-                return res.status(500).json({ message: "Greška prilikom slanja slike" });
-            }
+    if (position === null || isNaN(position) || position < 0 || position > 8)
+        return res.status(400).json({ message: "Pozicija slike nije validna" });
 
-            try {
-                const user = await User.findById(req.user.id);
-                if (!user) return res.status(404).json({ message: "Korisnik nije pronađen" });
+    try {
+        const result = await new Promise((resolve, reject) => {
+            const stream = cloudinary.uploader.upload_stream({ folder: "profile_pictures" }, (error, result) => {
+                if (error) reject(error); else resolve(result);
+            });
+            stream.end(req.file.buffer);
+        });
 
-                user.profilePictures.push(result.secure_url);
+        console.log("[Ruta] Cloudinary upload uspešan:", result.secure_url);
 
-                if (user.profilePictures.length === 1) {
-                    user.avatar = result.secure_url;
-                }
-
-                await user.save();
-
-                res.status(200).json({ message: "Slika uspešno sačuvana", imageUrl: result.secure_url });
-            } catch (e) {
-                console.error("Greška pri čuvanju korisnika:", e);
-                res.status(500).json({ message: "Greška pri čuvanju korisnika" });
-            }
+        const user = await User.findById(req.user.id);
+        if (!user) {
+            console.error("[Ruta] User nije pronađen!");
+            return res.status(404).json({ message: "Korisnik nije pronađen" });
         }
-    );
 
-    stream.end(req.file.buffer);
+        const newProfilePictures = [...user.profilePictures];
+        while (newProfilePictures.length < position + 1) newProfilePictures.push(null);
+        newProfilePictures[position] = result.secure_url;
+
+        user.profilePictures = newProfilePictures.filter(Boolean);
+        if (user.profilePictures.length === 1) user.avatar = result.secure_url;
+
+        await user.save();
+        console.log("[Ruta] User slike update-ovan, broj slika:", user.profilePictures.length);
+
+        res.status(200).json({ message: "Slika uspešno sačuvana", imageUrl: result.secure_url });
+    } catch (error) {
+        console.error("[Ruta] Greška prilikom uploada slike:", error.message);
+        res.status(500).json({ message: "Greška prilikom slanja slike" });
+    }
 });
 
-// Čuvanje svih slika u bazi
+// ---------------- REORDER PROFILE PICTURES ----------------
+router.put('/reorder-profile-pictures', authMiddleware, async (req, res) => {
+    console.log("[Ruta] PUT /reorder-profile-pictures");
+    try {
+        const { pictures } = req.body;
+        console.log("[Ruta] Novi redosled slika:", pictures);
+
+        const user = await User.findById(req.user.id);
+        if (!user) {
+            console.error("[Ruta] User nije pronađen!");
+            return res.status(404).json({ message: 'Korisnik nije pronađen.' });
+        }
+
+        const newProfilePictures = pictures.map(url => user.profilePictures.includes(url) ? url : null).filter(Boolean);
+        user.profilePictures = newProfilePictures;
+        await user.save();
+
+        console.log("[Ruta] Slike uspešno ređane:", user.profilePictures);
+
+        res.status(200).json({ message: 'Redosled slika je uspešno ažuriran.' });
+    } catch (error) {
+        console.error("[Ruta] Greška servera:", error.message);
+        res.status(500).json({ message: 'Greška servera.' });
+    }
+});
+
+// ---------------- SAVE PROFILE PICTURES ----------------
 router.post("/save-profile-pictures", authMiddleware, async (req, res) => {
+    console.log("[Ruta] POST /save-profile-pictures");
     try {
         const { images } = req.body;
+        console.log("[Ruta] Slike za čuvanje:", images);
+
         const user = await User.findById(req.user.id);
-        if (!user) return res.status(404).json({ message: "Korisnik nije pronađen" });
+        if (!user) {
+            console.error("[Ruta] User nije pronađen!");
+            return res.status(404).json({ message: "Korisnik nije pronađen" });
+        }
 
         user.profilePictures = images;
         await user.save();
 
+        console.log("[Ruta] User slike update-ovane, broj:", images.length);
+
         res.status(200).json({ message: "Slike uspešno sačuvane" });
     } catch (error) {
+        console.error("[Ruta] Interna greška:", error.message);
         res.status(500).json({ message: "Interna greška servera" });
     }
 });
 
-// Dohvatanje slika korisnika
+// ---------------- GET PROFILE PICTURES ----------------
 router.get('/profile-pictures', authMiddleware, async (req, res) => {
+    console.log("[Ruta] GET /profile-pictures");
     try {
         const user = await User.findById(req.user.id);
-        if (!user) return res.status(404).json({ message: "Korisnik nije pronađen" });
+        if (!user) {
+            console.error("[Ruta] User nije pronađen!");
+            return res.status(404).json({ message: "Korisnik nije pronađen" });
+        }
+
+        console.log("[Ruta] Vraćam slike:", user.profilePictures);
 
         res.status(200).json({ profilePictures: user.profilePictures });
     } catch (error) {
+        console.error("[Ruta] Interna greška:", error.message);
         res.status(500).json({ message: "Interna greška servera" });
     }
 });
 
-// Brisanje slike
-router.delete('/delete-profile-picture', authMiddleware, async (req, res) => {
+// ---------------- DELETE PROFILE PICTURE ----------------
+router.delete('/delete-profile-picture', authMiddleware, deleteProfilePicture);
+
+// ---------------- POTENTIAL MATCHES ----------------
+router.get("/matches", authMiddleware, getPotentialMatches);
+
+// ---------------- SWIPE ACTION ----------------
+router.post("/swipe", authMiddleware, swipeAction);
+
+// ---------------- USER'S MATCHES ----------------
+router.get("/my-matches", authMiddleware, async (req, res) => {
+    console.log("[Ruta] GET /my-matches - UserID:", req.user?.id);
     try {
-        const { imageUrl } = req.body; // Axios podržava slanje body i za DELETE
-        if (!imageUrl) return res.status(400).json({ message: "imageUrl nije prosleđen" });
-
-        const user = await User.findById(req.user.id);
-        if (!user) return res.status(404).json({ message: "Korisnik nije pronađen" });
-
-        const index = user.profilePictures.indexOf(imageUrl);
-        if (index === -1) return res.status(404).json({ message: "Slika nije pronađena" });
-
-        user.profilePictures.splice(index, 1);
-
-        if (user.avatar === imageUrl) {
-            user.avatar = user.profilePictures[0] || null;
+        const user = await User.findById(req.user.id).populate("matches", "fullName profilePictures birthDate");
+        if (!user) {
+            console.error("[Ruta] User nije pronađen!");
+            return res.status(404).json({ message: "Korisnik nije pronađen" });
         }
 
-        await user.save();
+        console.log("[Ruta] Broj match-eva:", user.matches.length);
 
-        const publicId = getCloudinaryPublicId(imageUrl);
-        if (publicId) {
-            cloudinary.uploader.destroy(publicId, (error, result) => {
-                if (error) console.error("Greška pri brisanju slike sa Cloudinary:", error);
-            });
-        }
-
-        return res.status(200).json({ message: "Slika uspešno obrisana" });
+        res.status(200).json({ matches: user.matches });
     } catch (error) {
-        return res.status(500).json({ message: "Interna greška servera" });
+        console.error("[Ruta] Greška servera:", error.message);
+        res.status(500).json({ message: "Greška servera" });
     }
 });
 
-// Dohvatanje profila trenutno ulogovanog korisnika
-router.get('/profile', authMiddleware, getProfile);
-
-// Dohvatanje profila po ID-u
-router.get('/:userId', authMiddleware, getProfileById);
-
-// Ažuriranje profila - ovo je najvažnija izmena, preusmerava na ađurirani kontroler
-// I dalje koristi updateProfile, ali sad updateProfile mora da prepozna tip unosa
-router.put('/update-profile', authMiddleware, updateProfile);
-
-// Dohvatanje svih korisnika
+// ---------------- ALL USERS ----------------
 router.get("/all-users", authMiddleware, getAllUsers);
 
-// Pomoćna funkcija za Cloudinary publicId
-function getCloudinaryPublicId(imageUrl) {
-    try {
-        const url = new URL(imageUrl);
-        const parts = url.pathname.split('/');
-        const publicIdWithVersion = parts.slice(parts.indexOf('upload') + 2).join('/');
-        const publicId = publicIdWithVersion.replace(/\.[^/.]+$/, "");
-        return publicId;
-    } catch {
-        return null;
-    }
-}
+// ---------------- GET PROFILE ----------------
+router.get('/profile', authMiddleware, getProfile);
+
+// ---------------- GET PROFILE BY ID ----------------
+router.get('/:userId', authMiddleware, getProfileById);
+
+// ---------------- UPDATE PROFILE ----------------
+router.put('/update-profile', authMiddleware, updateProfile);
 
 module.exports = router;

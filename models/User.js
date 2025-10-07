@@ -1,4 +1,3 @@
-// Fajl: models/User.js
 const { Schema, model } = require("mongoose");
 
 // Definišemo Mongoose šemu za korisnika
@@ -35,15 +34,11 @@ const UserSchema = new Schema(
     jobTitle: { type: String, default: null },
     education: { type: [String], default: [] },
 
-    // Lokacija i vidljivost
+    // ✨ KLJUČNA IZMENA: Uklonjena je `default` vrednost.
+    // Sada će novi korisnici imati `location: undefined`, što će omogućiti 
+    // frontendu da ih ispravno prepozna i pokrene proveru lokacije.
     location: {
       type: Object,
-      default: {
-        latitude: null,
-        longitude: null,
-        accuracy: null,
-        locationCity: null,
-      },
     },
     showLocation: { type: Boolean, default: false },
 
@@ -63,4 +58,6 @@ const UserSchema = new Schema(
   }
 );
 
+// Direktno eksportujemo model (bitno za findById i findByIdAndUpdate)
 module.exports = model("User", UserSchema);
+

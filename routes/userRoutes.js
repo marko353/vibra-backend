@@ -1,7 +1,7 @@
+// routes/userRoutes.js
 const express = require('express');
 const multer = require('multer');
 const cloudinary = require('../config/cloudinaryConfig');
-const User = require('../models/User');
 const {
     login,
     updateProfile,
@@ -30,8 +30,6 @@ router.post('/upload-profile-picture', authMiddleware, upload.single('profilePic
     if (!req.file) return res.status(400).json({ message: "Nema slike za upload" });
 
     const position = req.body.position ? parseInt(req.body.position) : null;
-    console.log("[Ruta] Pozicija slike:", position);
-
     if (position === null || isNaN(position) || position < 0 || position > 8)
         return res.status(400).json({ message: "Pozicija slike nije validna" });
 
@@ -43,13 +41,8 @@ router.post('/upload-profile-picture', authMiddleware, upload.single('profilePic
             stream.end(req.file.buffer);
         });
 
-        console.log("[Ruta] Cloudinary upload uspešan:", result.secure_url);
-
-        const user = await User.findById(req.user.id);
-        if (!user) {
-            console.error("[Ruta] User nije pronađen!");
-            return res.status(404).json({ message: "Korisnik nije pronađen" });
-        }
+        const user = await require("../models/User").findById(req.user.id);
+        if (!user) return res.status(404).json({ message: "Korisnik nije pronađen" });
 
         const newProfilePictures = [...user.profilePictures];
         while (newProfilePictures.length < position + 1) newProfilePictures.push(null);
@@ -59,8 +52,6 @@ router.post('/upload-profile-picture', authMiddleware, upload.single('profilePic
         if (user.profilePictures.length === 1) user.avatar = result.secure_url;
 
         await user.save();
-        console.log("[Ruta] User slike update-ovan, broj slika:", user.profilePictures.length);
-
         res.status(200).json({ message: "Slika uspešno sačuvana", imageUrl: result.secure_url });
     } catch (error) {
         console.error("[Ruta] Greška prilikom uploada slike:", error.message);
@@ -70,22 +61,14 @@ router.post('/upload-profile-picture', authMiddleware, upload.single('profilePic
 
 // ---------------- REORDER PROFILE PICTURES ----------------
 router.put('/reorder-profile-pictures', authMiddleware, async (req, res) => {
-    console.log("[Ruta] PUT /reorder-profile-pictures");
     try {
         const { pictures } = req.body;
-        console.log("[Ruta] Novi redosled slika:", pictures);
-
-        const user = await User.findById(req.user.id);
-        if (!user) {
-            console.error("[Ruta] User nije pronađen!");
-            return res.status(404).json({ message: 'Korisnik nije pronađen.' });
-        }
+        const user = await require("../models/User").findById(req.user.id);
+        if (!user) return res.status(404).json({ message: 'Korisnik nije pronađen.' });
 
         const newProfilePictures = pictures.map(url => user.profilePictures.includes(url) ? url : null).filter(Boolean);
         user.profilePictures = newProfilePictures;
         await user.save();
-
-        console.log("[Ruta] Slike uspešno ređane:", user.profilePictures);
 
         res.status(200).json({ message: 'Redosled slika je uspešno ažuriran.' });
     } catch (error) {
@@ -96,21 +79,13 @@ router.put('/reorder-profile-pictures', authMiddleware, async (req, res) => {
 
 // ---------------- SAVE PROFILE PICTURES ----------------
 router.post("/save-profile-pictures", authMiddleware, async (req, res) => {
-    console.log("[Ruta] POST /save-profile-pictures");
     try {
         const { images } = req.body;
-        console.log("[Ruta] Slike za čuvanje:", images);
-
-        const user = await User.findById(req.user.id);
-        if (!user) {
-            console.error("[Ruta] User nije pronađen!");
-            return res.status(404).json({ message: "Korisnik nije pronađen" });
-        }
+        const user = await require("../models/User").findById(req.user.id);
+        if (!user) return res.status(404).json({ message: "Korisnik nije pronađen" });
 
         user.profilePictures = images;
         await user.save();
-
-        console.log("[Ruta] User slike update-ovane, broj:", images.length);
 
         res.status(200).json({ message: "Slike uspešno sačuvane" });
     } catch (error) {
@@ -121,15 +96,9 @@ router.post("/save-profile-pictures", authMiddleware, async (req, res) => {
 
 // ---------------- GET PROFILE PICTURES ----------------
 router.get('/profile-pictures', authMiddleware, async (req, res) => {
-    console.log("[Ruta] GET /profile-pictures");
     try {
-        const user = await User.findById(req.user.id);
-        if (!user) {
-            console.error("[Ruta] User nije pronađen!");
-            return res.status(404).json({ message: "Korisnik nije pronađen" });
-        }
-
-        console.log("[Ruta] Vraćam slike:", user.profilePictures);
+        const user = await require("../models/User").findById(req.user.id);
+        if (!user) return res.status(404).json({ message: "Korisnik nije pronađen" });
 
         res.status(200).json({ profilePictures: user.profilePictures });
     } catch (error) {
@@ -141,6 +110,34 @@ router.get('/profile-pictures', authMiddleware, async (req, res) => {
 // ---------------- DELETE PROFILE PICTURE ----------------
 router.delete('/delete-profile-picture', authMiddleware, deleteProfilePicture);
 
+// ---------------- UPDATE LOCATION ----------------
+router.patch("/update-location", authMiddleware, async (req, res) => {
+    try {
+        const { latitude, longitude, accuracy, locationCity, showLocation } = req.body;
+
+        const updateData = {};
+        if (showLocation) {
+            updateData.location = { latitude, longitude, accuracy, locationCity };
+            updateData.showLocation = true;
+        } else {
+            updateData.location = null;
+            updateData.showLocation = false;
+        }
+
+        const user = await require("../models/User").findByIdAndUpdate(req.user.id, { $set: updateData }, { new: true });
+        if (!user) return res.status(404).json({ message: "Korisnik nije pronađen" });
+
+        res.status(200).json({
+            message: "Lokacija ažurirana",
+            location: user.location,
+            showLocation: user.showLocation
+        });
+    } catch (error) {
+        console.error("[Ruta] Greška update-location:", error.message);
+        res.status(500).json({ message: "Greška prilikom čuvanja lokacije" });
+    }
+});
+
 // ---------------- POTENTIAL MATCHES ----------------
 router.get("/matches", authMiddleware, getPotentialMatches);
 
@@ -149,15 +146,9 @@ router.post("/swipe", authMiddleware, swipeAction);
 
 // ---------------- USER'S MATCHES ----------------
 router.get("/my-matches", authMiddleware, async (req, res) => {
-    console.log("[Ruta] GET /my-matches - UserID:", req.user?.id);
     try {
-        const user = await User.findById(req.user.id).populate("matches", "fullName profilePictures birthDate");
-        if (!user) {
-            console.error("[Ruta] User nije pronađen!");
-            return res.status(404).json({ message: "Korisnik nije pronađen" });
-        }
-
-        console.log("[Ruta] Broj match-eva:", user.matches.length);
+        const user = await require("../models/User").findById(req.user.id).populate("matches", "fullName profilePictures birthDate");
+        if (!user) return res.status(404).json({ message: "Korisnik nije pronađen!" });
 
         res.status(200).json({ matches: user.matches });
     } catch (error) {

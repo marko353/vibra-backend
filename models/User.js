@@ -40,12 +40,6 @@ const UserSchema = new Schema(
     },
     showLocation: { type: Boolean, default: false },
 
-    // 👇 DODATO POLJE 👇
-    hasCompletedLocationPrompt: {
-        type: Boolean,
-        default: false
-    },
-
     gender: { type: String, default: null },
     sexualOrientation: { type: String, default: null },
 

@@ -121,7 +121,7 @@ exports.updateProfile = async (req, res) => {
             'sexualOrientation', 'relationshipType', 'horoscope', 'familyPlans',
             'communicationStyle', 'loveStyle', 'pets', 'drinks', 'smokes',
             'workout', 'diet', 'height', 'languages', 'interests', 
-            'hasCompletedLocationPrompt'
+            
         ];
 
         const finalUpdatePayload = {};

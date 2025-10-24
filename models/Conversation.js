@@ -1,16 +1,20 @@
 // models/Conversation.js
-const mongoose = require('mongoose');
+const mongoose = require("mongoose");
 
-const conversationSchema = new mongoose.Schema({
-  participants: [{
-    type: mongoose.Schema.Types.ObjectId,
-    ref: 'User',
-  }],
-  messages: [{
-    type: mongoose.Schema.Types.ObjectId,
-    ref: 'Message',
-    default: [],
-  }],
-}, { timestamps: true });
+const ParticipantSchema = new mongoose.Schema({
+  user: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true },
+  is_new: { type: Boolean, default: true },
+  has_unread_messages: { type: Boolean, default: false },
+  // ✅ NOVO POLJE
+  has_sent_message: { type: Boolean, default: false } 
+});
 
-module.exports = mongoose.model('Conversation', conversationSchema);
+const ConversationSchema = new mongoose.Schema(
+  {
+    participants: [ParticipantSchema],
+    messages: [{ type: mongoose.Schema.Types.ObjectId, ref: "Message" }]
+  },
+  { timestamps: true }
+);
+
+module.exports = mongoose.model("Conversation", ConversationSchema);

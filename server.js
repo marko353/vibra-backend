@@ -1,4 +1,4 @@
-// server.js (Kompletna verzija sa Socket Error Handlerom)
+// server.js
 
 const express = require("express");
 const mongoose = require("mongoose");
@@ -8,187 +8,165 @@ const http = require("http");
 const { Server } = require("socket.io");
 const jwt = require("jsonwebtoken");
 
-// Rute i modeli
+// Routes & models
 const authRoutes = require("./routes/authRoutes");
 const userRoutes = require("./routes/userRoutes");
 const Conversation = require("./models/Conversation");
 const Message = require("./models/Message");
 
 dotenv.config();
+
 const app = express();
 const server = http.createServer(app);
 
-// Allow CORS (prilagodi origin na produkciju)
-const io = new Server(server, { cors: { origin: "*" } });
+// ================= SOCKET.IO =================
+const io = new Server(server, {
+  cors: { origin: "*" },
+});
 
-// Middleware
+// ================= GLOBALS (BITNO!) =================
+const onlineUsers = new Map(); // userId -> Set(socketId)
+global.io = io;
+global.onlineUsers = onlineUsers;
+
+// ================= MIDDLEWARE =================
 app.use(cors());
 app.use(express.json());
 
-// MongoDB konekcija
-mongoose.connect(process.env.MONGO_URI)
+// ================= MONGODB =================
+mongoose
+  .connect(process.env.MONGO_URI)
   .then(() => console.log("✅ MongoDB Connected!"))
-  .catch((err) => console.error("❌ MongoDB connection error:", err));
+  .catch((err) => console.error("❌ MongoDB error:", err));
 
-// Rute
+// ================= ROUTES =================
 app.use("/api/auth", authRoutes);
 app.use("/api/user", userRoutes);
 
-// --- ONLINE KORISNICI ---
-const onlineUsers = new Map(); // mapa: userId (string) -> Set(socketId)
-
-// ================= SOCKET.IO =================
-
-// JWT autentifikacija socketa
+// ================= SOCKET AUTH =================
 io.use((socket, next) => {
   const token = socket.handshake.auth?.token;
-  console.log(`🔌 [AUTH] Pokušaj konekcije: socket ID ${socket.id}`);
+  console.log(`🔌 [AUTH] Socket pokušaj: ${socket.id}`);
 
   if (!token) {
-    console.error(`   -> ❌ Token nedostaje za socket ${socket.id}`);
     return next(new Error("Authentication error: Token missing"));
   }
 
   try {
     const payload = jwt.verify(token, process.env.JWT_SECRET);
-    socket.userId = String(payload.id); // SIGURNO string
-    console.log(`   -> ✅ Uspešna autorizacija za User ID: ${socket.userId}`);
+    socket.userId = String(payload.id);
+    console.log(`   -> ✅ Autorizovan user: ${socket.userId}`);
     next();
   } catch (err) {
-    console.error(`   -> ❌ Token nevažeći za socket ${socket.id}. Greška: ${err.message}`);
+    console.error("❌ Socket auth error:", err.message);
     next(new Error("Authentication error: Token invalid"));
   }
 });
 
+// ================= SOCKET CONNECTION =================
 io.on("connection", (socket) => {
-  const userId = String(socket.userId);
-  console.log(`[CONNECTION] 🟢 Socket povezan: ${socket.id}, User ID: ${userId}`);
+  const userId = socket.userId;
+  console.log(`🟢 Socket povezan: ${socket.id}, user ${userId}`);
 
-  // Dodaj socket u onlineUsers
-  if (!onlineUsers.has(userId)) onlineUsers.set(userId, new Set());
+  // ---- ONLINE USERS ----
+  if (!onlineUsers.has(userId)) {
+    onlineUsers.set(userId, new Set());
+  }
   onlineUsers.get(userId).add(socket.id);
 
-  console.log(`[ONLINE USERS] Trenutno online:`, Array.from(onlineUsers.keys()));
   io.emit("updateOnlineUsers", Array.from(onlineUsers.keys()));
 
-  // --- HANDLER: slanje poruka ---
+  // ==================================================
+  // 📩 SEND MESSAGE (emitujemo SAMO primaocu)
+  // ==================================================
   socket.on("sendMessage", async ({ receiverId, text }, callback) => {
-    const senderId = String(socket.userId);
     if (!receiverId || !text) {
-      if (callback) callback({ status: "error", message: "Podaci nedostaju." });
-      return;
+      return callback?.({ status: "error", message: "Nedostaju podaci" });
     }
 
-    const receiverIdStr = String(receiverId);
-
     try {
-      // 1) Nađi konverzaciju
-      let conversation = await Conversation.findOne({
-        "participants.user": { $all: [senderId, receiverIdStr] }
+      const conversation = await Conversation.findOne({
+        "participants.user": { $all: [userId, receiverId] },
       });
 
       if (!conversation) {
-        console.warn(`[sendMessage] Odbijeno: Korisnik ${senderId} pokušao da piše ${receiverIdStr} bez konverzacije.`);
-        if (callback) callback({ status: "error", message: "Konverzacija ne postoji." });
-        return;
+        return callback?.({
+          status: "error",
+          message: "Konverzacija ne postoji",
+        });
       }
 
-      // 2) Sačuvaj poruku
-      const message = new Message({
+      // 1️⃣ Sačuvaj poruku
+      const message = await Message.create({
         conversationId: conversation._id,
-        sender: senderId,
-        receiver: receiverIdStr,
-        text
-      });
-      const savedMessage = await message.save();
-      conversation.messages.push(savedMessage._id);
-
-      // 3) Ažuriraj status učesnika (✅ NOVA LOGIKA)
-      let senderUpdated = false;
-      let receiverUpdated = false;
-      conversation.participants = conversation.participants.map(p => {
-          const participantObject = p.toObject ? p.toObject() : { ...p };
-          participantObject.is_new = false; // Postavi 'is_new: false' za OBA
-
-          if (p.user.equals(receiverIdStr)) { // Primaocu
-              participantObject.has_unread_messages = true;
-              receiverUpdated = true;
-          }
-          else if (p.user.equals(senderId)) { // Pošiljaocu
-              participantObject.has_sent_message = true;
-              participantObject.has_unread_messages = false; // Osiguraj da pošiljalac nema unread
-              senderUpdated = true;
-          }
-          return participantObject;
+        sender: userId,
+        receiver: receiverId,
+        text,
       });
 
-      if (!senderUpdated || !receiverUpdated) {
-          console.error("Greška: Nisu ažurirani statusi oba učesnika u sendMessage!");
-      }
+      conversation.messages.push(message._id);
 
-      conversation.markModified('participants'); // Osiguraj da Mongoose sačuva promene
+      // 2️⃣ Update participant statusa
+      conversation.participants = conversation.participants.map((p) => {
+        const obj = p.toObject();
+
+        if (p.user.equals(receiverId)) {
+          obj.has_unread_messages = true;
+        }
+
+        if (p.user.equals(userId)) {
+          obj.has_unread_messages = false;
+          obj.has_sent_message = true;
+          obj.is_new = false;
+        }
+
+        return obj;
+      });
+
+      conversation.markModified("participants");
       await conversation.save();
 
-      // 4) Emituj poruku primaocu
-      const messageToEmit = savedMessage.toObject();
+      const payload = message.toObject();
 
-      const receiverSockets = onlineUsers.get(receiverIdStr);
+      // 3️⃣ EMITUJ PRIMAOCU
+      const receiverSockets = onlineUsers.get(String(receiverId));
       if (receiverSockets) {
-        console.log(` -> Emitujem poruku primaocu ${receiverIdStr} na ${receiverSockets.size} soketa.`);
-        receiverSockets.forEach(socketId => io.to(socketId).emit("receiveMessage", messageToEmit));
-      } else {
-        console.log(` -> Primalac ${receiverIdStr} nije online.`);
+        receiverSockets.forEach((sid) => {
+          io.to(sid).emit("receiveMessage", payload);
+        });
       }
 
-      // 5) Emituj pošiljaocu (za sinhronizaciju) - Opciono, ali korisno
-      const senderSockets = onlineUsers.get(senderId);
-      if (senderSockets) {
-         console.log(` -> Emitujem potvrdu pošiljaocu ${senderId} na ${senderSockets.size} soketa.`);
-         senderSockets.forEach(socketId => {
-             // Možeš emitovati istu poruku ili poseban event za potvrdu
-             io.to(socketId).emit("receiveMessage", messageToEmit); // Emituje istu poruku nazad
-         });
-      }
-
-      // 6) Javi klijentu da je uspelo (callback)
-      if (callback) callback({ status: "ok", message: messageToEmit });
+      // 4️⃣ CALLBACK POŠILJAOCU
+      callback?.({ status: "ok", message: payload });
 
     } catch (err) {
-      console.error("❌ Greška u 'sendMessage':", err);
-      if (callback) callback({ status: "error", message: "Greška na serveru." });
+      console.error("❌ sendMessage error:", err);
+      callback?.({ status: "error", message: "Server error" });
     }
   });
 
-  // --- ✅ DODAT ERROR HANDLER ---
-  socket.on("error", (err) => {
-    console.error(`❌ SOCKET GREŠKA za korisnika ${socket.userId} (socket ${socket.id}):`, err.message);
-    // Ovde možeš dodati logiku ako treba, npr. forsirani disconnect
-    // socket.disconnect(true); // Na primer
-  });
-  // --- KRAJ DODATKA ---
-
-
-  // --- DISCONNECT ---
+  // ================= DISCONNECT =================
   socket.on("disconnect", (reason) => {
-    console.log(`[DISCONNECT] 🔴 Socket ${socket.id} prekinuo vezu, User ID: ${userId}. Razlog: ${reason}`);
-    const uid = String(socket.userId); // userId je već string, ali za svaki slučaj
-    const userSocketSet = onlineUsers.get(uid);
-    if (userSocketSet) {
-      userSocketSet.delete(socket.id);
-      if (userSocketSet.size === 0) {
-        onlineUsers.delete(uid);
-        console.log(`   -> Korisnik ${uid} je sada potpuno offline.`);
-        // Emituj ažuriranu listu samo ako se neko *stvarno* odjavio
+    console.log(`🔴 Socket ${socket.id} disconnect (${reason})`);
+
+    const sockets = onlineUsers.get(userId);
+    if (sockets) {
+      sockets.delete(socket.id);
+      if (sockets.size === 0) {
+        onlineUsers.delete(userId);
         io.emit("updateOnlineUsers", Array.from(onlineUsers.keys()));
       }
-    } else {
-        console.warn(`[DISCONNECT] Pokušaj diskonekcije za korisnika ${uid} koji nije bio u mapi online korisnika.`);
     }
-    console.log(`[ONLINE USERS] Trenutno online:`, Array.from(onlineUsers.keys()));
-    // Nema potrebe emitovati ovde ako se nije promenio broj online korisnika
+  });
+
+  // ================= SOCKET ERROR =================
+  socket.on("error", (err) => {
+    console.error(`❌ Socket error (${socket.id}):`, err.message);
   });
 });
 
-// Pokreni server
+// ================= START SERVER =================
 const PORT = process.env.PORT || 5000;
-server.listen(PORT, () => console.log(`🚀 Server je pokrenut na portu ${PORT}`));
+server.listen(PORT, () =>
+  console.log(`🚀 Server pokrenut na portu ${PORT}`)
+);

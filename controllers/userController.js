@@ -157,51 +157,106 @@ exports.getPotentialMatches = async (req, res) => {
 
 // ================= SWIPE ACTION =================
 exports.swipeAction = async (req, res) => {
-  try {
-    const { targetUserId, action } = req.body;
-    const user = await User.findById(req.user.id);
-    const targetUser = await User.findById(targetUserId);
-    if (!user || !targetUser) return res.status(404).json({ message: "Korisnik nije pronađen" });
+  try {
+    const { targetUserId, action } = req.body;
+    const user = await User.findById(req.user.id);
+    const targetUser = await User.findById(targetUserId);
 
-    let matchOccurred = false;
+    if (!user || !targetUser) {
+      return res.status(404).json({ message: "Korisnik nije pronađen" });
+    }
 
-    if (action === "like") {
-      user.likes.addToSet(targetUserId);
-      if (targetUser.likes.includes(user._id)) {
-        matchOccurred = true;
-        user.matches.addToSet(targetUserId);
-        targetUser.matches.addToSet(user._id);
+    let matchOccurred = false;
 
-        const existingConversation = await Conversation.findOne({ "participants.user": { $all: [user._id, targetUser._id] } });
-        if (!existingConversation) {
-          // Novi meč sa default statusima
-          const newConversation = new Conversation({
-            participants: [
-              { user: user._id, is_new: true, has_unread_messages: false, has_sent_message: false },
-              { user: targetUser._id, is_new: true, has_unread_messages: false, has_sent_message: false }
-            ]
-          });
-          await newConversation.save();
-        }
-        await targetUser.save(); // Sačuvaj promene na targetUser (dodat meč)
-      }
-    } else if (action === "dislike") {
-      user.dislikes.addToSet(targetUserId);
-    }
+    if (action === "like") {
+      user.likes.addToSet(targetUserId);
 
-    await user.save(); // Sačuvaj promene na trenutnom korisniku (like/dislike)
+      // ✅ AKO JE OBASTRANI LIKE → MATCH
+      if (targetUser.likes.includes(user._id)) {
+        matchOccurred = true;
 
-    if (matchOccurred) {
-      // Vrati podatke o mečovanom korisniku
-      return res.status(200).json({ match: true, matchedUser: { _id: targetUser._id, fullName: targetUser.fullName, avatar: targetUser.avatar } });
-    }
+        user.matches.addToSet(targetUserId);
+        targetUser.matches.addToSet(user._id);
 
-    return res.status(200).json({ match: false, message: "Akcija sačuvana" });
-  } catch (error) {
-    console.error("[Controller] SWIPE ACTION - Error:", error);
-    res.status(500).json({ message: "Greška servera" });
-  }
+        const existingConversation = await Conversation.findOne({
+          "participants.user": { $all: [user._id, targetUser._id] },
+        });
+
+        if (!existingConversation) {
+          const newConversation = new Conversation({
+            participants: [
+              {
+                user: user._id,
+                is_new: true,
+                has_unread_messages: false,
+                has_sent_message: false,
+              },
+              {
+                user: targetUser._id,
+                is_new: true,
+                has_unread_messages: false,
+                has_sent_message: false,
+              },
+            ],
+          });
+
+          await newConversation.save();
+        }
+
+        await targetUser.save();
+      }
+    } else if (action === "dislike") {
+      user.dislikes.addToSet(targetUserId);
+    }
+
+    await user.save();
+
+    // ================= 🔴 SOCKET MATCH EVENT =================
+    if (matchOccurred) {
+      const io = global.io;
+      const onlineUsers = global.onlineUsers;
+
+      const userSockets = onlineUsers.get(String(user._id));
+      const targetSockets = onlineUsers.get(String(targetUser._id));
+
+      // payload koji frontend očekuje
+      const matchForTarget = {
+        _id: user._id,
+        fullName: user.fullName,
+        avatar: user.avatar,
+      };
+
+      const matchForUser = {
+        _id: targetUser._id,
+        fullName: targetUser.fullName,
+        avatar: targetUser.avatar,
+      };
+
+      // 🔔 pošalji targetUser-u
+      if (targetSockets) {
+        targetSockets.forEach((socketId) => {
+          io.to(socketId).emit("newMatch", matchForTarget);
+        });
+      }
+
+   
+
+      return res.status(200).json({
+        match: true,
+        matchedUser: matchForUser,
+      });
+    }
+
+    return res.status(200).json({
+      match: false,
+      message: "Akcija sačuvana",
+    });
+  } catch (error) {
+    console.error("[Controller] SWIPE ACTION - Error:", error);
+    res.status(500).json({ message: "Greška servera" });
+  }
 };
+
 // ================= GET MATCHES & CONVERSATIONS =================
 exports.getMatchesAndConversations = async (req, res) => {
   try {

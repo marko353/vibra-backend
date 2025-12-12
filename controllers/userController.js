@@ -130,25 +130,23 @@ exports.deleteProfilePicture = async (req, res) => {
 };
 
 // ================= GET POTENTIAL MATCHES =================
-const mongoose = require("mongoose"); // dodaj ovo na vrh fajla
-
 exports.getPotentialMatches = async (req, res) => {
   try {
     const user = await User.findById(req.user.id).lean();
     if (!user) return res.status(404).json({ message: "User not found" });
 
-    // Pripremi listu ID-jeva koje treba izuzeti
     const excludedIds = [
-      mongoose.Types.ObjectId(user._id),
-      ...(Array.isArray(user.likes) ? user.likes.map(id => mongoose.Types.ObjectId(id)) : []),
-      ...(Array.isArray(user.dislikes) ? user.dislikes.map(id => mongoose.Types.ObjectId(id)) : []),
-      ...(Array.isArray(user.matches) ? user.matches.map(id => mongoose.Types.ObjectId(id)) : []),
+      user._id,
+      ...(Array.isArray(user.matches) ? user.matches : [])
     ];
 
-    // Dohvati sve potencijalne mečeve osim onih u excludedIds
-    const potentialMatches = await User.find({ _id: { $nin: excludedIds } })
-      .select('fullName profilePictures birthDate location height relationshipType education jobTitle horoscope workout interests pets drinks smokes avatar')
+    const potentialMatches = await User.find({
+      _id: { $nin: excludedIds }
+    })
+      .select('fullName profilePictures birthDate location avatar')
       .lean();
+
+    console.log("➡️ potentialMatches length:", potentialMatches.length);
 
     res.status(200).json({ users: potentialMatches });
   } catch (error) {
@@ -156,7 +154,6 @@ exports.getPotentialMatches = async (req, res) => {
     res.status(500).json({ message: "Server error" });
   }
 };
-
 
 // ================= SWIPE ACTION =================
 exports.swipeAction = async (req, res) => {
@@ -205,79 +202,98 @@ exports.swipeAction = async (req, res) => {
     res.status(500).json({ message: "Greška servera" });
   }
 };
-
 // ================= GET MATCHES & CONVERSATIONS =================
 exports.getMatchesAndConversations = async (req, res) => {
-  try {
-    const currentUser = await User.findById(req.user.id);
-    if (!currentUser) return res.status(404).json({ message: "Korisnik nije pronađen" });
+  try {
+    const currentUser = await User.findById(req.user.id);
+    if (!currentUser) return res.status(404).json({ message: "Korisnik nije pronađen" });
 
-    const conversations = await Conversation.find({ "participants.user": currentUser._id })
-      .populate({ path: 'participants.user', select: 'fullName avatar' })
-      .populate({
-          path: 'messages',
-          options: { sort: { createdAt: -1 }, limit: 1 } 
-      })
-      .lean();
+    // 1. Učitaj sve konverzacije gde učestvuje currentUser
+    const conversations = await Conversation.find({ "participants.user": currentUser._id })
+      .populate({ path: 'participants.user', select: 'fullName avatar' })
+      .lean();
 
-    const newMatches = [];
-    const existingConversations = [];
+    // 2. Za SVAKU konverzaciju dohvatamo POSLEDNJU poruku direktno iz Message kolekcije
+    const conversationsWithLastMessage = await Promise.all(
+      conversations.map(async (conv) => {
+        const lastMessage = await Message.findOne({ conversationId: conv._id })
+          .sort({ createdAt: -1 })
+          .lean();
 
-    for (const conv of conversations) {
-      const otherParticipant = conv.participants.find(p => p.user && !p.user._id.equals(currentUser._id));
-      if (!otherParticipant || !otherParticipant.user) {
-          console.warn(`Konverzacija ${conv._id} nema validnog drugog učesnika.`);
-          continue;
-      }
+        return {
+          ...conv,
+          _lastMessage: lastMessage || null,
+        };
+      })
+    );
 
-      const chatUser = {
-        _id: otherParticipant.user._id,
-        fullName: otherParticipant.user.fullName,
-        avatar: otherParticipant.user.avatar,
-      };
+    const newMatches = [];
+    const existingConversations = [];
 
-      const userStatus = conv.participants.find(p => p.user && p.user._id.equals(currentUser._id));
-      if (!userStatus) {
-          console.warn(`Status za korisnika ${currentUser._id} nije pronađen u konverzaciji ${conv._id}.`);
-          continue;
-      }
+    for (const conv of conversationsWithLastMessage) {
+      const otherParticipant = conv.participants.find(
+        (p) => p.user && !p.user._id.equals(currentUser._id)
+      );
 
-      // Logika razdvajanja:
-      if (conv.messages && conv.messages.length > 0) { // Ako IMA poruka
-        existingConversations.push({
-          chatId: conv._id.toString(),
-          user: chatUser,
-          lastMessage: {
-            text: conv.messages[0]?.text || '...',
-            timestamp: conv.messages[0]?.createdAt
-          },
-          // Tačka samo ako ima nepročitanih PORUKA
-          has_unread: userStatus.has_unread_messages
-        });
-      }
-      else { // Ako NEMA poruka (novi spoj)
-        newMatches.push({
-          ...chatUser,
-          chatId: conv._id.toString(),
-          // Tačka se prikazuje ako je 'is_new' true
-          has_unread: userStatus.is_new
-        });
-      }
-    }
+      if (!otherParticipant || !otherParticipant.user) {
+        console.warn(`Konverzacija ${conv._id} nema validnog drugog učesnika.`);
+        continue;
+      }
 
-    // Sortiraj konverzacije po vremenu poslednje poruke
-    existingConversations.sort((a, b) => {
-        const timeA = a.lastMessage?.timestamp ? new Date(a.lastMessage.timestamp).getTime() : 0;
-        const timeB = b.lastMessage?.timestamp ? new Date(b.lastMessage.timestamp).getTime() : 0;
-        return timeB - timeA; // Najnovije prvo
-    });
+      const chatUser = {
+        _id: otherParticipant.user._id,
+        fullName: otherParticipant.user.fullName,
+        avatar: otherParticipant.user.avatar,
+      };
 
-    res.status(200).json({ newMatches, conversations: existingConversations });
-  } catch (error) {
-    console.error("[Controller] GET MATCHES & CONVERSATIONS - Error:", error);
-    res.status(500).json({ message: "Greška servera" });
-  }
+      const userStatus = conv.participants.find(
+        (p) => p.user && p.user._id.equals(currentUser._id)
+      );
+
+      if (!userStatus) {
+        console.warn(`Status za korisnika ${currentUser._id} nije pronađen u konverzaciji ${conv._id}.`);
+        continue;
+      }
+
+      // ✅ Ako postoji BILO KAKVA poruka za ovu konverzaciju → IDE U PORUKE
+      const lastMsg = conv._lastMessage;
+      const hasMessages = !!lastMsg;
+
+      if (hasMessages) {
+        existingConversations.push({
+          chatId: conv._id.toString(),
+          user: chatUser,
+          lastMessage: {
+            text: lastMsg.text || '...',
+            timestamp: lastMsg.createdAt,
+          },
+          // Badge samo ako ovaj user ima nepročitane poruke
+          has_unread: !!userStatus.has_unread_messages,
+        });
+      } else {
+        // ⬅️ Nema poruka → novi spoj (prikaz na vrhu)
+        newMatches.push({
+          ...chatUser,
+          chatId: conv._id.toString(),
+          has_unread: !!userStatus.is_new,
+        });
+      }
+    }
+
+    // 3. Sortiraj konverzacije po vremenu poslednje poruke (najnovije prvo)
+    existingConversations.sort((a, b) => {
+      const timeA = a.lastMessage?.timestamp ? new Date(a.lastMessage.timestamp).getTime() : 0;
+      const timeB = b.lastMessage?.timestamp ? new Date(b.lastMessage.timestamp).getTime() : 0;
+      return timeB - timeA;
+    });
+
+    res.status(200).json({ newMatches, conversations: existingConversations });
+  } catch (error) {
+    console.error("[Controller] GET MATCHES & CONVERSATIONS - Error:", error);
+    res.status(500).json({ message: "Greška servera" });
+  }
 };
+
 
 
 // ================= GET MESSAGES =================

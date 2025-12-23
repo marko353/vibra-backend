@@ -83,33 +83,74 @@ exports.getProfileById = async (req, res) => {
 
 // ================= UPDATE PROFILE =================
 exports.updateProfile = async (req, res) => {
-  try {
-    const userId = req.user.id;
-    let updateData = req.body;
-    if (updateData.field && updateData.value !== undefined) {
-      updateData = { [updateData.field]: updateData.value };
-    }
+  try {
+    const userId = req.user.id;
+    let updateData = req.body;
 
-    const allowedUpdates = ['bio', 'jobTitle', 'education', 'location', 'showLocation', 'gender', 'sexualOrientation', 'relationshipType', 'horoscope', 'familyPlans', 'communicationStyle', 'loveStyle', 'pets', 'drinks', 'smokes', 'workout', 'diet', 'height', 'languages', 'interests'];
-    const finalUpdatePayload = {};
-    Object.keys(updateData).forEach(key => {
-      if (allowedUpdates.includes(key)) finalUpdatePayload[key] = updateData[key];
-    });
+    if (updateData.field && updateData.value !== undefined) {
+      updateData = { [updateData.field]: updateData.value };
+    }
 
-    if (Object.keys(finalUpdatePayload).length === 0) {
-      const user = await User.findById(userId).select('-password').lean();
-      return res.status(200).json(user);
-    }
+    const allowedUpdates = [
+      'bio',
+      'jobTitle',
+      'education',
+      'location',
+      'showLocation',
+      'gender',
+      'sexualOrientation',
+      'relationshipType',
+      'horoscope',
+      'familyPlans',
+      'communicationStyle',
+      'loveStyle',
+      'pets',
+      'drinks',
+      'smokes',
+      'workout',
+      'diet',
+      'height',
+      'languages',
+      'interests',
+    ];
 
-    const updatedUser = await User.findByIdAndUpdate(userId, { $set: finalUpdatePayload }, { new: true, runValidators: true }).select('-password').lean();
-    if (!updatedUser) return res.status(404).json({ message: "User not found." });
-    return res.status(200).json(updatedUser);
+    // ✅ OBAVEZNO OVDE
+    const finalUpdatePayload = {};
 
-  } catch (error) {
-    console.error("[Controller] UPDATE PROFILE - Error:", error);
-    return res.status(500).json({ message: "Server error", error: error.message });
-  }
+    Object.keys(updateData).forEach((key) => {
+      if (allowedUpdates.includes(key)) {
+        finalUpdatePayload[key] = updateData[key];
+      }
+    });
+
+    if (Object.keys(finalUpdatePayload).length === 0) {
+      const user = await User.findById(userId)
+        .select('-password')
+        .lean();
+      return res.status(200).json(user);
+    }
+
+    const updatedUser = await User.findByIdAndUpdate(
+      userId,
+      { $set: finalUpdatePayload },
+      { new: true, runValidators: true }
+    )
+      .select('-password')
+      .lean();
+
+    if (!updatedUser) {
+      return res.status(404).json({ message: 'User not found.' });
+    }
+
+    return res.status(200).json(updatedUser);
+  } catch (error) {
+    console.error('[Controller] UPDATE PROFILE - Error:', error);
+    return res
+      .status(500)
+      .json({ message: 'Server error', error: error.message });
+  }
 };
+
 
 // ================= DELETE PROFILE PICTURE =================
 exports.deleteProfilePicture = async (req, res) => {
@@ -128,25 +169,106 @@ exports.deleteProfilePicture = async (req, res) => {
     res.status(500).json({ message: "Server error" });
   }
 };
+exports.reorderProfilePictures = async (req, res) => {
+  try {
+    const { pictures } = req.body;
 
-// ================= GET POTENTIAL MATCHES =================
+    if (!Array.isArray(pictures)) {
+      return res
+        .status(400)
+        .json({ message: 'Nevalidan format slika' });
+    }
+
+    const User = require('../models/User');
+    const user = await User.findById(req.user.id);
+
+    if (!user) {
+      return res
+        .status(404)
+        .json({ message: 'Korisnik nije pronađen' });
+    }
+
+    // sigurnosni filter (nikad null u bazi)
+    const cleanPictures = pictures.filter(
+      (p) => typeof p === 'string'
+    );
+
+    user.profilePictures = cleanPictures;
+
+    // avatar = prva slika
+    user.avatar = cleanPictures[0] || null;
+
+    await user.save();
+
+    return res.json({
+      success: true,
+      profilePictures: user.profilePictures,
+    });
+  } catch (error) {
+    console.error('[REORDER PROFILE PICTURES ERROR]', error);
+    return res
+      .status(500)
+      .json({ message: 'Greška pri promeni redosleda slika' });
+  }
+};
+
+
+/// ================= GET POTENTIAL MATCHES =================
 exports.getPotentialMatches = async (req, res) => {
   try {
     const user = await User.findById(req.user.id).lean();
-    if (!user) return res.status(404).json({ message: "User not found" });
+    if (!user) {
+      return res.status(404).json({ message: "User not found" });
+    }
 
     const excludedIds = [
       user._id,
-      ...(Array.isArray(user.matches) ? user.matches : [])
+
+      // ❌ već matchovani
+      ...(user.matches || []),
+
+     
     ];
 
     const potentialMatches = await User.find({
-      _id: { $nin: excludedIds }
+      _id: { $nin: excludedIds },
     })
-      .select('fullName profilePictures birthDate location avatar')
+     .select(`
+  fullName
+  profilePictures
+  birthDate
+  avatar
+
+  bio
+  relationshipType
+  interests
+  height
+  languages
+  horoscope
+  familyPlans
+  communicationStyle
+  loveStyle
+  pets
+  drinks
+  smokes
+  workout
+  diet
+  jobTitle
+  education
+
+  location
+  showLocation
+
+  gender
+  sexualOrientation
+`)
       .lean();
 
     console.log("➡️ potentialMatches length:", potentialMatches.length);
+    console.log(
+      "🚫 Excluded IDs:",
+      excludedIds.map((id) => id.toString())
+    );
 
     res.status(200).json({ users: potentialMatches });
   } catch (error) {
@@ -159,103 +281,145 @@ exports.getPotentialMatches = async (req, res) => {
 exports.swipeAction = async (req, res) => {
   try {
     const { targetUserId, action } = req.body;
+
     const user = await User.findById(req.user.id);
     const targetUser = await User.findById(targetUserId);
 
     if (!user || !targetUser) {
-      return res.status(404).json({ message: "Korisnik nije pronađen" });
-    }
-
-    let matchOccurred = false;
-
-    if (action === "like") {
-      user.likes.addToSet(targetUserId);
-
-      // ✅ AKO JE OBASTRANI LIKE → MATCH
-      if (targetUser.likes.includes(user._id)) {
-        matchOccurred = true;
-
-        user.matches.addToSet(targetUserId);
-        targetUser.matches.addToSet(user._id);
-
-        const existingConversation = await Conversation.findOne({
-          "participants.user": { $all: [user._id, targetUser._id] },
-        });
-
-        if (!existingConversation) {
-          const newConversation = new Conversation({
-            participants: [
-              {
-                user: user._id,
-                is_new: true,
-                has_unread_messages: false,
-                has_sent_message: false,
-              },
-              {
-                user: targetUser._id,
-                is_new: true,
-                has_unread_messages: false,
-                has_sent_message: false,
-              },
-            ],
-          });
-
-          await newConversation.save();
-        }
-
-        await targetUser.save();
-      }
-    } else if (action === "dislike") {
-      user.dislikes.addToSet(targetUserId);
-    }
-
-    await user.save();
-
-    // ================= 🔴 SOCKET MATCH EVENT =================
-    if (matchOccurred) {
-      const io = global.io;
-      const onlineUsers = global.onlineUsers;
-
-      const userSockets = onlineUsers.get(String(user._id));
-      const targetSockets = onlineUsers.get(String(targetUser._id));
-
-      // payload koji frontend očekuje
-      const matchForTarget = {
-        _id: user._id,
-        fullName: user.fullName,
-        avatar: user.avatar,
-      };
-
-      const matchForUser = {
-        _id: targetUser._id,
-        fullName: targetUser.fullName,
-        avatar: targetUser.avatar,
-      };
-
-      // 🔔 pošalji targetUser-u
-      if (targetSockets) {
-        targetSockets.forEach((socketId) => {
-          io.to(socketId).emit("newMatch", matchForTarget);
-        });
-      }
-
-   
-
-      return res.status(200).json({
-        match: true,
-        matchedUser: matchForUser,
+      return res.status(404).json({
+        message: "Korisnik nije pronađen",
       });
     }
 
-    return res.status(200).json({
-      match: false,
-      message: "Akcija sačuvana",
+    console.log("➡️ SWIPE ACTION", {
+      from: user._id.toString(),
+      to: targetUser._id.toString(),
+      action,
+    });
+
+    // ================= LIKE =================
+if (action === "like") {
+  console.log(
+    `❤️ LIKE: ${user._id} lajkuje ${targetUser._id}`
+  );
+
+  // 1️⃣ UPISI LIKE KOD TARGET USERA (ovo puni Likes tab)
+ targetUser.likes.addToSet(user._id);
+
+
+  // 2️⃣ Provera mutual like (da li je B već lajkovao A)
+  const isMutualLike = user.likes.some(
+    (id) => id.toString() === targetUser._id.toString()
+  );
+
+  console.log("🔍 MUTUAL LIKE:", isMutualLike);
+
+  // ================= MATCH =================
+if (isMutualLike) {
+  console.log("🔥 MATCH OCCURRED");
+
+  // 1️⃣ Upis match-a
+  user.matches.addToSet(targetUser._id);
+  targetUser.matches.addToSet(user._id);
+
+  // 2️⃣ Očisti incoming like
+  targetUser.likes.pull(user._id);
+
+  // 3️⃣ Konverzacija
+  const existingConversation = await Conversation.findOne({
+    "participants.user": { $all: [user._id, targetUser._id] },
+  });
+
+  if (!existingConversation) {
+    console.log("💬 Kreiram novu konverzaciju");
+
+    await Conversation.create({
+      participants: [
+        {
+          user: user._id,
+          is_new: true,
+          has_unread_messages: false,
+          has_sent_message: false,
+        },
+        {
+          user: targetUser._id,
+          is_new: true,
+          has_unread_messages: false,
+          has_sent_message: false,
+        },
+      ],
+    });
+  }
+
+  await user.save();
+  await targetUser.save();
+
+  // ==================================================
+  // 🔔 SOCKET MATCH EVENT (OVO TI JE FALILO)
+  // ==================================================
+  const targetSockets = global.onlineUsers.get(
+    targetUser._id.toString()
+  );
+
+  if (targetSockets) {
+    targetSockets.forEach((sid) => {
+      global.io.to(sid).emit("match", {
+        userId: user._id,
+      });
+    });
+  }
+
+  // 👇 FRONTEND USER (A) dobija match=true → match screen
+  return res.json({
+    match: true,
+    matchedUser: {
+      _id: targetUser._id,
+      fullName: targetUser.fullName,
+      avatar: targetUser.avatar,
+    },
+  });
+}
+
+
+  // ================= SAMO LIKE =================
+  console.log(
+    "👍 Samo like — user dodat u target.likes (Likes tab)"
+  );
+
+  await targetUser.save();
+
+  return res.json({
+    match: false,
+    message: "Like sačuvan",
+  });
+}
+
+
+
+    // ================= DISLIKE =================
+    if (action === "dislike") {
+      console.log("👎 DISLIKE");
+
+      user.dislikes.addToSet(targetUser._id);
+      await user.save();
+
+      return res.json({
+        success: true,
+        message: "Dislike sačuvan",
+      });
+    }
+
+    return res.status(400).json({
+      message: "Nepoznata akcija",
     });
   } catch (error) {
-    console.error("[Controller] SWIPE ACTION - Error:", error);
-    res.status(500).json({ message: "Greška servera" });
+    console.error("❌ swipeAction error:", error);
+    return res.status(500).json({
+      message: "Server error",
+    });
   }
 };
+
 
 // ================= GET MATCHES & CONVERSATIONS =================
 exports.getMatchesAndConversations = async (req, res) => {
@@ -478,6 +642,30 @@ exports.markAsRead = async (req, res) => {
     res.status(500).json({ message: "Greška servera." });
   }
 };
+
+// ================= GET INCOMING LIKES =================
+exports.getIncomingLikes = async (req, res) => {
+  try {
+    const currentUserId = req.user.id;
+
+    // UČITAJ TRENUTNOG USERA
+    const currentUser = await User.findById(currentUserId).select("likes").lean();
+
+    // currentUser.likes = [ID-jevi onih koji su MENE lajkovali]
+    const users = await User.find({
+      _id: { $in: currentUser.likes },
+      matches: { $ne: currentUserId },
+    })
+      .select("fullName avatar birthDate")
+      .lean();
+
+    return res.json({ likes: users });
+  } catch (err) {
+    return res.status(500).json({ message: "Server error" });
+  }
+};
+
+
 
 // ================= UNMATCH =================
 exports.unmatchUser = async (req, res) => {

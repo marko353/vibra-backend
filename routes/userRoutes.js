@@ -15,8 +15,10 @@ const {
   swipeAction,
   getMatchesAndConversations,
   getMessages,
+  getIncomingLikes,
   postMessage,
   unmatchUser,
+  reorderProfilePictures,
   markAsRead,
 } = require('../controllers/userController');
 
@@ -103,6 +105,13 @@ router.get(
   authMiddleware,
   getPotentialMatches
 );
+/* ===================== REORDER PROFILE PICTURES ===================== */
+router.put(
+  '/reorder-profile-pictures',
+  authMiddleware,
+  reorderProfilePictures
+);
+
 
 /* ===================== SWIPE ===================== */
 router.post('/swipe', authMiddleware, swipeAction);
@@ -112,6 +121,10 @@ router.post('/message', authMiddleware, postMessage);
 router.get('/chat/:chatId/messages', authMiddleware, getMessages);
 router.post('/chat/:chatId/message', authMiddleware, postMessage);
 router.post('/chat/:chatId/mark-as-read', authMiddleware, markAsRead);
+
+/* =====================incoming likes ===================== */
+router.get('/incoming-likes', authMiddleware, getIncomingLikes);
+
 
 /* ===================== MATCHES & UNMATCH ===================== */
 router.get('/my-matches', authMiddleware, getMatchesAndConversations);
@@ -126,5 +139,9 @@ router.get('/:userId', authMiddleware, getProfileById);
 
 /* ===================== UPDATE PROFILE ===================== */
 router.put('/update-profile', authMiddleware, updateProfile);
+
+
+
+
 
 module.exports = router;

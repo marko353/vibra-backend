@@ -24,7 +24,7 @@ const io = new Server(server, {
   cors: { origin: "*" },
 });
 
-// ================= GLOBALS (BITNO!) =================
+// ================= GLOBALS =================
 const onlineUsers = new Map(); // userId -> Set(socketId)
 global.io = io;
 global.onlineUsers = onlineUsers;
@@ -49,6 +49,7 @@ io.use((socket, next) => {
   console.log(`🔌 [AUTH] Socket pokušaj: ${socket.id}`);
 
   if (!token) {
+    console.log("❌ Socket auth: token missing");
     return next(new Error("Authentication error: Token missing"));
   }
 
@@ -68,18 +69,56 @@ io.on("connection", (socket) => {
   const userId = socket.userId;
   console.log(`🟢 Socket povezan: ${socket.id}, user ${userId}`);
 
-  // ---- ONLINE USERS ----
+  // ================= ONLINE USERS =================
   if (!onlineUsers.has(userId)) {
     onlineUsers.set(userId, new Set());
   }
+
   onlineUsers.get(userId).add(socket.id);
 
+  console.log(
+    "👥 ONLINE USERS MAP:",
+    Array.from(onlineUsers.entries()).map(([uid, sockets]) => ({
+      userId: uid,
+      sockets: Array.from(sockets),
+    }))
+  );
+
   io.emit("updateOnlineUsers", Array.from(onlineUsers.keys()));
+
+  // ==================================================
+  // ❤️ LIKE RECEIVED (REAL-TIME LIKES TAB)
+  // ==================================================
+  socket.on("likeSent", ({ targetUserId }) => {
+    console.log(
+      "❤️ likeSent → from:",
+      userId,
+      "to:",
+      targetUserId
+    );
+
+    const receiverSockets = onlineUsers.get(String(targetUserId));
+
+    console.log(
+      "📤 emit likeReceived → sockets:",
+      receiverSockets
+    );
+
+    if (receiverSockets) {
+      receiverSockets.forEach((sid) => {
+        io.to(sid).emit("likeReceived", {
+          fromUserId: userId,
+        });
+      });
+    }
+  });
 
   // ==================================================
   // 📩 SEND MESSAGE (emitujemo SAMO primaocu)
   // ==================================================
   socket.on("sendMessage", async ({ receiverId, text }, callback) => {
+    console.log("✉️ sendMessage", { from: userId, to: receiverId });
+
     if (!receiverId || !text) {
       return callback?.({ status: "error", message: "Nedostaju podaci" });
     }
@@ -130,6 +169,14 @@ io.on("connection", (socket) => {
 
       // 3️⃣ EMITUJ PRIMAOCU
       const receiverSockets = onlineUsers.get(String(receiverId));
+
+      console.log(
+        "📤 emit receiveMessage → receiver:",
+        receiverId,
+        "sockets:",
+        receiverSockets
+      );
+
       if (receiverSockets) {
         receiverSockets.forEach((sid) => {
           io.to(sid).emit("receiveMessage", payload);
@@ -138,7 +185,6 @@ io.on("connection", (socket) => {
 
       // 4️⃣ CALLBACK POŠILJAOCU
       callback?.({ status: "ok", message: payload });
-
     } catch (err) {
       console.error("❌ sendMessage error:", err);
       callback?.({ status: "error", message: "Server error" });
@@ -152,11 +198,20 @@ io.on("connection", (socket) => {
     const sockets = onlineUsers.get(userId);
     if (sockets) {
       sockets.delete(socket.id);
+
       if (sockets.size === 0) {
         onlineUsers.delete(userId);
         io.emit("updateOnlineUsers", Array.from(onlineUsers.keys()));
       }
     }
+
+    console.log(
+      "👥 ONLINE USERS AFTER DISCONNECT:",
+      Array.from(onlineUsers.entries()).map(([uid, sockets]) => ({
+        userId: uid,
+        sockets: Array.from(sockets),
+      }))
+    );
   });
 
   // ================= SOCKET ERROR =================

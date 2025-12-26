@@ -669,41 +669,64 @@ exports.getIncomingLikes = async (req, res) => {
 
 // ================= UNMATCH =================
 exports.unmatchUser = async (req, res) => {
-  const currentUserId = req.user.id;
-  const { chatId } = req.params;
+  const currentUserId = req.user.id;
+  const { chatId } = req.params;
 
-  try {
-    const conversation = await Conversation.findOne({ _id: chatId, "participants.user": currentUserId });
-    if (!conversation) return res.status(404).json({ message: "Spoj ili razgovor nisu pronađeni." });
+  try {
+    const conversation = await Conversation.findOne({
+      _id: chatId,
+      "participants.user": currentUserId,
+    });
 
-    const otherParticipant = conversation.participants.find(p => p.user && !p.user.equals(currentUserId));
-    if (!otherParticipant || !otherParticipant.user) return res.status(400).json({ message: "Drugi korisnik nije mogao biti identifikovan." });
-    const otherUserId = otherParticipant.user;
+    if (!conversation) {
+      return res.status(404).json({ message: "Spoj ili razgovor nisu pronađeni." });
+    }
 
-    // 1. Očisti poruke i konverzaciju
-    await Message.deleteMany({ conversationId: conversation._id });
-    console.log(`Obrisane poruke za konverzaciju ${conversation._id}`);
+    const otherParticipant = conversation.participants.find(
+      p => p.user && !p.user.equals(currentUserId)
+    );
 
-    await Conversation.findByIdAndDelete(conversation._id);
-    console.log(`Obrisana konverzacija ${conversation._id}`);
+    const otherUserId = otherParticipant.user;
 
-    // 2. Ukloni Match status
-    await User.updateOne( { _id: currentUserId }, { $pull: { matches: otherUserId } } );
-    await User.updateOne( { _id: otherUserId }, { $pull: { matches: currentUserId } } );
-    console.log(`Uklonjen meč između ${currentUserId} i ${otherUserId}`);
+    // 1️⃣ obriši poruke
+    await Message.deleteMany({ conversationId: conversation._id });
+
+    // 2️⃣ obriši konverzaciju
+    await Conversation.findByIdAndDelete(conversation._id);
+
+    // 3️⃣ ukloni match
+    await User.updateOne(
+      { _id: currentUserId },
+      { $pull: { matches: otherUserId } }
+    );
+
+    await User.updateOne(
+      { _id: otherUserId },
+      { $pull: { matches: currentUserId } }
+    );
+
     
-    // 3. FIX: Ukloni lajkove da bi se sprečio automatski re-match (Ovo je rešilo vaš prethodni problem)
-    // Ukloni lajk Usera B (otherUserId) iz liste lajkova Usera A (currentUserId)
-    await User.updateOne( { _id: currentUserId }, { $pull: { likes: otherUserId } } );
-    console.log(`Uklonjen lajk ${otherUserId} iz likes liste ${currentUserId}.`);
+    //  SOCKET EVENT
+   
+    const targetSockets = global.onlineUsers.get(
+      otherUserId.toString()
+    );
 
-    // Ukloni lajk Usera A (currentUserId) iz liste lajkova Usera B (otherUserId)
-    await User.updateOne( { _id: otherUserId }, { $pull: { likes: currentUserId } } );
-    console.log(`Uklonjen lajk ${currentUserId} iz likes liste ${otherUserId}.`);
+    if (targetSockets) {
+      targetSockets.forEach((sid) => {
+        global.io.to(sid).emit('conversationRemoved', {
+          conversationId: chatId,
+        });
+      });
+    }
 
-    res.status(200).json({ message: "Spoj i sve poruke su uspešno obrisani." });
-  } catch (error) {
-    console.error("[Controller] UNMATCH ACTION - Error:", error);
-    res.status(500).json({ message: "Greška servera prilikom prekida spoja" });
-  }
+    return res.status(200).json({
+      message: "Spoj i sve poruke su uspešno obrisani.",
+    });
+  } catch (error) {
+    console.error("[Controller] UNMATCH ACTION - Error:", error);
+    return res.status(500).json({
+      message: "Greška servera prilikom prekida spoja",
+    });
+  }
 };

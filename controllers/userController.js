@@ -297,130 +297,135 @@ exports.swipeAction = async (req, res) => {
       action,
     });
 
-    // ================= LIKE =================
-if (action === "like") {
-  console.log(
-    `❤️ LIKE: ${user._id} lajkuje ${targetUser._id}`
-  );
+    // ================= ACTION: LIKE =================
+    if (action === "like") {
+      console.log(`❤️ LIKE: ${user._id} lajkuje ${targetUser._id}`);
 
-  // 1️⃣ UPISI LIKE KOD TARGET USERA (ovo puni Likes tab)
- targetUser.likes.addToSet(user._id);
+      // 1️⃣ Provera uzajamnosti (Da li je on MENE već lajkovao?)
+      // user.likes sadrži ID-jeve ljudi koji su lajkovali 'user'-a
+      const isMutualLike = user.likes.some(
+        (id) => id.toString() === targetUser._id.toString()
+      );
 
+      console.log("🔍 MUTUAL LIKE PROVERA:", isMutualLike);
 
-  // 2️⃣ Provera mutual like (da li je B već lajkovao A)
-  const isMutualLike = user.likes.some(
-    (id) => id.toString() === targetUser._id.toString()
-  );
+      // ================= CASE A: MATCH =================
+      if (isMutualLike) {
+        console.log("🔥 MATCH OCCURRED - Obostrani lajk detektovan");
 
-  console.log("🔍 MUTUAL LIKE:", isMutualLike);
+        // 1. Upis match-a kod oba korisnika
+        user.matches.addToSet(targetUser._id);
+        targetUser.matches.addToSet(user._id);
 
-  // ================= MATCH =================
-if (isMutualLike) {
-  console.log("🔥 MATCH OCCURRED");
+        // 2. Očisti 'incoming like' - pošto ste sada match, ne treba da stoji u Likes tabu
+        // Brišemo targetUser-a iz tvoje liste lajkova (umanjuje tvoj brojač)
+        user.likes.pull(targetUser._id);
+        
+        // Za svaki slučaj čistimo i tvoj ID iz njegove liste ako je postojao
+        targetUser.likes.pull(user._id);
 
-  // 1️⃣ Upis match-a
-  user.matches.addToSet(targetUser._id);
-  targetUser.matches.addToSet(user._id);
+        // 3. Kreiranje ili pronalaženje konverzacije
+        let conversation = await Conversation.findOne({
+          "participants.user": { $all: [user._id, targetUser._id] },
+        });
 
-  // 2️⃣ Očisti incoming like
-  targetUser.likes.pull(user._id);
+        if (!conversation) {
+          console.log("💬 Kreiram novu konverzaciju za match");
+          conversation = await Conversation.create({
+            participants: [
+              {
+                user: user._id,
+                is_new: true,
+                has_unread_messages: false,
+                has_sent_message: false,
+              },
+              {
+                user: targetUser._id,
+                is_new: true,
+                has_unread_messages: false,
+                has_sent_message: false,
+              },
+            ],
+          });
+        }
 
-  // 3️⃣ Konverzacija
-  const existingConversation = await Conversation.findOne({
-    "participants.user": { $all: [user._id, targetUser._id] },
-  });
+        await user.save();
+        await targetUser.save();
 
-  if (!existingConversation) {
-    console.log("💬 Kreiram novu konverzaciju");
+        // 🔔 SOCKET: Obavesti drugu osobu da se desio match
+        const targetSockets = global.onlineUsers.get(targetUser._id.toString());
+        if (targetSockets) {
+          targetSockets.forEach((sid) => {
+            global.io.to(sid).emit("match", {
+              userId: user._id,
+              fullName: user.fullName,
+              avatar: user.avatar,
+              birthDate: user.birthDate,
+            });
+          });
+        }
 
-    await Conversation.create({
-      participants: [
-        {
-          user: user._id,
-          is_new: true,
-          has_unread_messages: false,
-          has_sent_message: false,
-        },
-        {
-          user: targetUser._id,
-          is_new: true,
-          has_unread_messages: false,
-          has_sent_message: false,
-        },
-      ],
-    });
-  }
+        return res.json({
+          match: true,
+          matchedUser: {
+            _id: targetUser._id,
+            fullName: targetUser.fullName,
+            avatar: targetUser.avatar,
+          },
+        });
+      }
 
-  await user.save();
-  await targetUser.save();
+// ================= CASE B: SAMO LIKE =================
+    console.log("👍 Nema matcha - dodajem lajk u targetUser.likes");
 
-  // ==================================================
-  // 🔔 SOCKET MATCH EVENT (OVO TI JE FALILO)
-  // ==================================================
-  const targetSockets = global.onlineUsers.get(
-    targetUser._id.toString()
-  );
+    // Dodaj tvoj ID u NJEGOVU listu lajkova (da bi se tebi pojavilo kod njega u Likes tabu)
+    targetUser.likes.addToSet(user._id);
+    await targetUser.save();
 
-  if (targetSockets) {
-    targetSockets.forEach((sid) => {
-      global.io.to(sid).emit("match", {
-        userId: user._id,
-      });
-    });
-  }
-
-  // 👇 FRONTEND USER (A) dobija match=true → match screen
-  return res.json({
-    match: true,
-    matchedUser: {
-      _id: targetUser._id,
-      fullName: targetUser.fullName,
-      avatar: targetUser.avatar,
-    },
-  });
-}
-
-
-  // ================= SAMO LIKE =================
-  console.log(
-    "👍 Samo like — user dodat u target.likes (Likes tab)"
-  );
-
-  await targetUser.save();
-
-  return res.json({
-    match: false,
-    message: "Like sačuvan",
-  });
-}
-
-
-
-    // ================= DISLIKE =================
-    if (action === "dislike") {
-      console.log("👎 DISLIKE");
-
-      user.dislikes.addToSet(targetUser._id);
-      await user.save();
-
-      return res.json({
-        success: true,
-        message: "Dislike sačuvan",
+    // 🔔 SOCKET: Javi drugoj osobi da je dobila lajk (povećava mu badge/brojač)
+    const targetSockets = global.onlineUsers.get(targetUser._id.toString());
+    if (targetSockets) {
+      targetSockets.forEach((sid) => {
+        global.io.to(sid).emit("likeReceived", {
+          fromUserId: user._id,
+          fullName: user.fullName,
+          avatar: user.avatar,
+          birthDate: user.birthDate, // <--- DODATO: Sada šaljemo i datum rođenja
+        });
       });
     }
 
-    return res.status(400).json({
-      message: "Nepoznata akcija",
-    });
-  } catch (error) {
-    console.error("❌ swipeAction error:", error);
-    return res.status(500).json({
-      message: "Server error",
+    return res.json({
+      match: false,
+      message: "Like sačuvan",
     });
   }
-};
 
+  // ================= ACTION: DISLIKE =================
+  if (action === "dislike") {
+    console.log("👎 DISLIKE");
 
+    // Dodajemo u dislikes da ga ne bi ponovo videli u potential matches
+    user.dislikes.addToSet(targetUser._id);
+    await user.save();
+
+    return res.json({
+      success: true,
+      message: "Dislike sačuvan",
+    });
+  }
+
+  return res.status(400).json({
+    message: "Nepoznata akcija",
+  });
+
+} catch (error) {
+  console.error("❌ swipeAction error:", error);
+  return res.status(500).json({
+    message: "Server error",
+  });
+}
+}
 // ================= GET MATCHES & CONVERSATIONS =================
 exports.getMatchesAndConversations = async (req, res) => {
   try {

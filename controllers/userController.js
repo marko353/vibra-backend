@@ -1,3 +1,4 @@
+
 const User = require("../models/User");
 const jwt = require("jsonwebtoken");
 const bcrypt = require("bcryptjs");
@@ -49,8 +50,41 @@ exports.login = async (req, res) => {
 // ================= GET ALL USERS =================
 exports.getAllUsers = async (req, res) => {
   try {
-    const users = await User.find({}, "fullName profilePictures birthDate avatar location height relationshipType education jobTitle horoscope workout interests pets drinks smokes").lean();
-    res.status(200).json({ users });
+    const filter = {};
+    console.log('[GET ALL USERS] Query params:', req.query);
+    // Filter za pol
+    if (req.query.gender === 'male' || req.query.gender === 'female') {
+      filter.gender = req.query.gender;
+    }
+    console.log('[GET ALL USERS] Filter after gender:', filter);
+    // Filter za godine (ako želiš, možeš dodati kao i u potentialMatches)
+    // Filter za udaljenost će biti primenjen u JS-u ispod
+
+    // Geo filter za udaljenost
+    if (req.query.maxDistance && req.query.latitude && req.query.longitude) {
+      const maxDistance = Number(req.query.maxDistance) * 1000 || 200000; // u metrima
+      const lat = Number(req.query.latitude);
+      const lon = Number(req.query.longitude);
+      filter.location = {
+        $near: {
+          $geometry: { type: "Point", coordinates: [lon, lat] },
+          $maxDistance: maxDistance
+        }
+      };
+      console.log('[GET ALL USERS] Geo filter:', JSON.stringify(filter.location, null, 2));
+    }
+
+    let users = await User.find(filter, "fullName profilePictures birthDate avatar location locationCity height relationshipType education jobTitle horoscope workout interests pets drinks smokes gender").lean();
+    console.log('[GET ALL USERS] Users before locationCity merge:', JSON.stringify(users, null, 2));
+    users = users.map(user => {
+      if (user.location && user.locationCity) {
+        user.location.locationCity = user.locationCity;
+      }
+      return user;
+    });
+    console.log('[GET ALL USERS] Users after locationCity merge:', JSON.stringify(users, null, 2));
+    console.log('[GET ALL USERS] Users found:', users.length);
+    res.status(200).json({ users });
   } catch (error) {
     console.error("[Controller] GET ALL USERS - Error:", error);
     res.status(500).json({ message: "Server error" });
@@ -87,8 +121,14 @@ exports.updateProfile = async (req, res) => {
     const userId = req.user.id;
     let updateData = req.body;
 
+
     if (updateData.field && updateData.value !== undefined) {
       updateData = { [updateData.field]: updateData.value };
+    }
+
+    // Validacija za polje gender
+    if (updateData.gender && !['male', 'female', 'other'].includes(updateData.gender)) {
+      return res.status(400).json({ message: 'Pol može biti samo "male", "female" ili "other".' });
     }
 
     const allowedUpdates = [
@@ -122,6 +162,18 @@ exports.updateProfile = async (req, res) => {
         finalUpdatePayload[key] = updateData[key];
       }
     });
+
+    // Ako korisnik šalje novu lokaciju i novi grad, ažuriraj oba
+    if (updateData.locationCity) {
+      finalUpdatePayload.locationCity = updateData.locationCity;
+    }
+
+    // Ako korisnik šalje novu lokaciju, ali nije poslao grad, možeš ovde automatski dodeliti grad na osnovu lokacije (ili ostaviti prazno)
+    // Primer: ako želiš default grad za svaku novu lokaciju
+    if (updateData.location && !updateData.locationCity) {
+      // OVAJ DEO MOŽEŠ PRILAGODITI: koristi reverse geocoding API za pravi grad
+      finalUpdatePayload.locationCity = 'Beograd';
+    }
 
     if (Object.keys(finalUpdatePayload).length === 0) {
       const user = await User.findById(userId)
@@ -221,58 +273,81 @@ exports.getPotentialMatches = async (req, res) => {
       return res.status(404).json({ message: "User not found" });
     }
 
-    const excludedIds = [
-      user._id,
+    // Filter parametri iz query stringa
+    const { minAge, maxAge, gender } = req.query;
+    const min = Number(minAge) || 18;
+    const max = Number(maxAge) || 99;
+    const today = new Date();
+    const minBirthDate = new Date(today.getFullYear() - max, today.getMonth(), today.getDate());
+    const maxBirthDate = new Date(today.getFullYear() - min, today.getMonth(), today.getDate());
 
-      // ❌ već matchovani
-      ...(user.matches || []),
 
-     
-    ];
+    let filter = {
+      _id: { $nin: [user._id, ...(user.matches || [])] },
+      birthDate: { $gte: minBirthDate, $lte: maxBirthDate },
+    };
+    if (gender === 'male' || gender === 'female') {
+      filter.gender = gender;
+    }
 
-    const potentialMatches = await User.find({
-      _id: { $nin: excludedIds },
-    })
-     .select(`
-  fullName
-  profilePictures
-  birthDate
-  avatar
+    // Geo filter za udaljenost
+    if (req.query.maxDistance && req.query.latitude && req.query.longitude) {
+      const maxDistance = Number(req.query.maxDistance) * 1000 || 200000; // u metrima
+      const lat = Number(req.query.latitude);
+      const lon = Number(req.query.longitude);
+      filter.location = {
+        $near: {
+          $geometry: { type: "Point", coordinates: [lon, lat] },
+          $maxDistance: maxDistance
+        }
+      };
+      console.log('[POTENTIAL MATCHES] Geo filter:', JSON.stringify(filter.location, null, 2));
+    }
 
-  bio
-  relationshipType
-  interests
-  height
-  languages
-  horoscope
-  familyPlans
-  communicationStyle
-  loveStyle
-  pets
-  drinks
-  smokes
-  workout
-  diet
-  jobTitle
-  education
+    console.log('[POTENTIAL MATCHES] Filter:', JSON.stringify(filter, null, 2));
 
-  location
-  showLocation
-
-  gender
-  sexualOrientation
-`)
+    let potentialMatches = await User.find(filter)
+      .select(`
+        fullName
+        profilePictures
+        birthDate
+        avatar
+        bio
+        relationshipType
+        interests
+        height
+        languages
+        horoscope
+        familyPlans
+        communicationStyle
+        loveStyle
+        pets
+        drinks
+        smokes
+        workout
+        diet
+        jobTitle
+        education
+        location
+        locationCity
+        showLocation
+        gender
+        sexualOrientation
+      `)
       .lean();
 
-    console.log("➡️ potentialMatches length:", potentialMatches.length);
-    console.log(
-      "🚫 Excluded IDs:",
-      excludedIds.map((id) => id.toString())
-    );
-
+    console.log('[POTENTIAL MATCHES] Users before locationCity merge:', JSON.stringify(potentialMatches, null, 2));
+    potentialMatches = potentialMatches.map(user => {
+      if (user.location && user.locationCity) {
+        user.location.locationCity = user.locationCity;
+      }
+      return user;
+    });
+    console.log('[POTENTIAL MATCHES] Users after locationCity merge:', JSON.stringify(potentialMatches, null, 2));
+    console.log('[POTENTIAL MATCHES] Broj nakon filtera (age/gender):', potentialMatches.length);
     res.status(200).json({ users: potentialMatches });
   } catch (error) {
-    console.error("[MATCHES] Error:", error);
+    console.error('[MATCHES] Error:', error);
     res.status(500).json({ message: "Server error" });
   }
 };
@@ -652,24 +727,123 @@ exports.markAsRead = async (req, res) => {
 exports.getIncomingLikes = async (req, res) => {
   try {
     const currentUserId = req.user.id;
+    console.log('[INCOMING LIKES] Poziv za userId:', currentUserId);
 
-    // UČITAJ TRENUTNOG USERA
-    const currentUser = await User.findById(currentUserId).select("likes").lean();
+    // Dohvati trenutnog korisnika
+    const user = await User.findById(currentUserId).lean();
+    if (!user) {
+      console.log('[INCOMING LIKES] Korisnik nije pronađen:', currentUserId);
+      return res.status(404).json({ message: 'User not found' });
+    }
 
-    // currentUser.likes = [ID-jevi onih koji su MENE lajkovali]
-    const users = await User.find({
-      _id: { $in: currentUser.likes },
-      matches: { $ne: currentUserId },
-    })
-      .select("fullName avatar birthDate")
+    // Filter parametri iz query stringa
+    const { minAge, maxAge, gender, latitude, longitude, maxDistance } = req.query;
+    const min = Number(minAge) || 18;
+    const max = Number(maxAge) || 99;
+    const today = new Date();
+    const minBirthDate = new Date(today.getFullYear() - max, today.getMonth(), today.getDate());
+    const maxBirthDate = new Date(today.getFullYear() - min, today.getMonth(), today.getDate());
+
+    // Pronađi sve korisnike koji su lajkovali trenutnog korisnika
+    const incomingLikeIds = user.likes || [];
+    console.log('[INCOMING LIKES] incomingLikeIds:', incomingLikeIds);
+
+    let query = {
+      _id: { $in: incomingLikeIds, $nin: [user._id, ...(user.matches || [])] },
+      birthDate: { $gte: minBirthDate, $lte: maxBirthDate },
+    };
+    if (gender === 'male' || gender === 'female') {
+      query.gender = gender;
+    }
+    if (latitude && longitude && maxDistance) {
+      query.location = {
+        $near: {
+          $geometry: {
+            type: "Point",
+            coordinates: [Number(longitude), Number(latitude)]
+          },
+          $maxDistance: Number(maxDistance) * 1000
+        }
+      };
+    }
+    console.log('[INCOMING LIKES] Query:', JSON.stringify(query, null, 2));
+
+    let users = await User.find(query)
+      .select(`
+        fullName
+        profilePictures
+        birthDate
+        avatar
+        bio
+        relationshipType
+        interests
+        height
+        languages
+        horoscope
+        familyPlans
+        communicationStyle
+        loveStyle
+        pets
+        drinks
+        smokes
+        workout
+        diet
+        jobTitle
+        education
+        location
+        showLocation
+        gender
+        sexualOrientation
+      `)
       .lean();
 
+    // Dodaj locationCity u location objekat
+    users = users.map(u => {
+      if (u.location && u.locationCity) {
+        u.location.locationCity = u.locationCity;
+      }
+      return u;
+    });
+
+    console.log('[INCOMING LIKES] Broj korisnika nakon filtera:', users.length);
+    if (users.length > 0) {
+      console.log('[INCOMING LIKES] Prvi korisnik:', users[0]);
+    }
     return res.json({ likes: users });
   } catch (err) {
+    console.error('[INCOMING LIKES] Greška:', err);
     return res.status(500).json({ message: "Server error" });
   }
 };
+// ========== TRAJNI FILTERI ==========
+exports.saveUserFilters = async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const { filters } = req.body;
+    if (!filters) return res.status(400).json({ message: 'Missing filters object' });
+    const user = await User.findById(userId);
+    if (!user) return res.status(404).json({ message: 'User not found' });
+    user.filters = filters;
+    await user.save();
+    console.log('[FILTERS] Sačuvani filteri za korisnika', userId, filters);
+    res.json({ success: true, filters: user.filters });
+  } catch (err) {
+    console.error('[FILTERS] Greška pri čuvanju filtera:', err);
+    res.status(500).json({ message: 'Server error' });
+  }
+};
 
+exports.getUserFilters = async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const user = await User.findById(userId).select('filters');
+    if (!user) return res.status(404).json({ message: 'User not found' });
+    res.json({ filters: user.filters });
+  } catch (err) {
+    console.error('[FILTERS] Greška pri učitavanju filtera:', err);
+    res.status(500).json({ message: 'Server error' });
+  }
+};
 
 
 // ================= UNMATCH =================

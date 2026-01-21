@@ -20,11 +20,18 @@ const {
   unmatchUser,
   reorderProfilePictures,
   markAsRead,
+  saveUserFilters,
+  getUserFilters,
 } = require('../controllers/userController');
+
 
 const router = express.Router();
 const storage = multer.memoryStorage();
 const upload = multer({ storage });
+
+// ========== TRAJNI FILTERI ==========
+router.patch('/filters', authMiddleware, saveUserFilters);
+router.get('/filters', authMiddleware, getUserFilters);
 
 /* ===================== LOGIN ===================== */
 router.post('/login', (req, res, next) => {

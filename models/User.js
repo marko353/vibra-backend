@@ -36,11 +36,20 @@ const UserSchema = new Schema(
     
     // Podaci o lokaciji
     location: {
-      type: Object,
+      type: {
+        type: String,
+        enum: ['Point'],
+        default: 'Point'
+      },
+      coordinates: {
+        type: [Number], // [longitude, latitude]
+        default: [0, 0]
+      }
     },
+    locationCity: { type: String, default: null },
     showLocation: { type: Boolean, default: false },
 
-    gender: { type: String, default: null },
+gender: { type: String, enum: ['male', 'female', 'other'], required: true },
     sexualOrientation: { type: String, default: null },
 
     // Swipe logika
@@ -51,6 +60,13 @@ const UserSchema = new Schema(
     // Tokeni i timestampovi
     resetPasswordToken: { type: String },
     resetPasswordExpires: { type: Date },
+
+    // Trajni filteri za korisnika
+    filters: {
+      ageRange: { type: [Number], default: [18, 99] },
+      distance: { type: Number, default: 50 },
+      gender: { type: String, default: 'any' }
+    },
   },
   {
     timestamps: true,

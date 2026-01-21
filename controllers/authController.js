@@ -9,8 +9,12 @@ const client = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
 // Registracija korisnika
 exports.register = async (req, res) => {
   try {
-    const { fullName, username, birthDate, email, password } = req.body;
+    const { fullName, username, birthDate, email, password, gender } = req.body;
     console.log("📤 Registracija pokušana za:", email);
+
+    if (!['male', 'female', 'other'].includes(gender)) {
+      return res.status(400).json({ message: 'Pol je obavezan i mora biti "male", "female" ili "other".' });
+    }
 
     const existingUser = await User.findOne({ email });
     if (existingUser) {
@@ -19,7 +23,7 @@ exports.register = async (req, res) => {
     }
 
     const hashedPassword = await bcrypt.hash(password, 10);
-    const newUser = new User({ fullName, username, birthDate, email, password: hashedPassword });
+    const newUser = new User({ fullName, username, birthDate, email, password: hashedPassword, gender });
 
     await newUser.save();
     console.log("✅ Korisnik registrovan:", newUser.email);

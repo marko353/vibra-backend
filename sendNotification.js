@@ -34,7 +34,7 @@ const sendPushNotification = async (fcmToken, title, body, data = {}) => {
 };
 
 // TEST: Pozovi funkciju sa tvojim tokenom koji si dobio u terminalu
-const MY_TOKEN = "dzv6l-MKSGOL_7XP49Gbeh:APA91bHKvk0nlJAo2K3vHDpLwSbEic4YSMlcxMUR8e_O1B-5DAw6wVQVRPbgpTpoRzsrH7ne4NapIdsm6_70kcrrj3r58Cb_cObI08BIN6JWKFD4g-PIc8k";
+const MY_TOKEN = "eBqVGLPJTv-Gmtl5EBMywp:APA91bHeilnxPRX7YUi_L_ev3gvZ5iulYj10_tITIzvjHFt8Cc6BDztcb4hxyyRgfGaW3PFRPyBjXS5jZEQeK9bHS7blO_G3EkGZQDjU_qatDekJH7iwM-A";
 
 sendPushNotification(
   MY_TOKEN, 

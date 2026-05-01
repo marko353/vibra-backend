@@ -67,6 +67,7 @@ gender: { type: String, enum: ['male', 'female', 'other'], required: true },
       distance: { type: Number, default: 50 },
       gender: { type: String, default: 'any' }
     },
+    fcmToken: { type: String, default: null },
   },
   {
     timestamps: true,

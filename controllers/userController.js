@@ -1,9 +1,10 @@
-
 const User = require("../models/User");
 const jwt = require("jsonwebtoken");
 const bcrypt = require("bcryptjs");
 const Conversation = require("../models/Conversation");
 const Message = require("../models/Message");
+const Match = require('../models/Match');
+const { sendMatchNotification } = require('../sendNotification');
 
 // ================= HELPER FUNKCIJE =================
 function tryParseJSON(value) {
@@ -231,7 +232,6 @@ exports.reorderProfilePictures = async (req, res) => {
         .json({ message: 'Nevalidan format slika' });
     }
 
-    const User = require('../models/User');
     const user = await User.findById(req.user.id);
 
     if (!user) {
@@ -376,7 +376,7 @@ exports.swipeAction = async (req, res) => {
     if (action === "like") {
       console.log(`❤️ LIKE: ${user._id} lajkuje ${targetUser._id}`);
 
-      // 1️⃣ Provera uzajamnosti (Da li je on MENE već lajkovao?)
+      // 1️⃣ Provera uzajamnosti (Da li je on MENE već lajkovali?)
       // user.likes sadrži ID-jeve ljudi koji su lajkovali 'user'-a
       const isMutualLike = user.likes.some(
         (id) => id.toString() === targetUser._id.toString()
@@ -439,6 +439,10 @@ exports.swipeAction = async (req, res) => {
             });
           });
         }
+
+        // 4. Poziv funkcije za slanje notifikacije
+        console.log("📤 Pozivam funkciju sendMatchNotification za korisnika:", targetUser._id);
+        await sendMatchNotification(targetUser._id, "New Match!", `${user.fullName} just matched with you!`);
 
         return res.json({
           match: true,
@@ -505,12 +509,19 @@ exports.swipeAction = async (req, res) => {
 exports.getMatchesAndConversations = async (req, res) => {
   try {
     const currentUser = await User.findById(req.user.id);
-    if (!currentUser) return res.status(404).json({ message: "Korisnik nije pronađen" });
+    if (!currentUser) {
+      console.error("[GET MATCHES & CONVERSATIONS] User not found:", req.user.id);
+      return res.status(404).json({ message: "Korisnik nije pronađen" });
+    }
+
+    console.log("[GET MATCHES & CONVERSATIONS] Current user:", currentUser);
 
     // 1. Učitaj sve konverzacije gde učestvuje currentUser
     const conversations = await Conversation.find({ "participants.user": currentUser._id })
       .populate({ path: 'participants.user', select: 'fullName avatar' })
       .lean();
+
+    console.log("[GET MATCHES & CONVERSATIONS] Conversations found:", conversations.length);
 
     // 2. Za SVAKU konverzaciju dohvatamo POSLEDNJU poruku direktno iz Message kolekcije
     const conversationsWithLastMessage = await Promise.all(
@@ -518,6 +529,8 @@ exports.getMatchesAndConversations = async (req, res) => {
         const lastMessage = await Message.findOne({ conversationId: conv._id })
           .sort({ createdAt: -1 })
           .lean();
+
+        console.log("[GET MATCHES & CONVERSATIONS] Last message for conversation:", conv._id, lastMessage);
 
         return {
           ...conv,
@@ -535,7 +548,7 @@ exports.getMatchesAndConversations = async (req, res) => {
       );
 
       if (!otherParticipant || !otherParticipant.user) {
-        console.warn(`Konverzacija ${conv._id} nema validnog drugog učesnika.`);
+        console.warn(`[GET MATCHES & CONVERSATIONS] Conversation ${conv._id} has no valid other participant.`);
         continue;
       }
 
@@ -550,7 +563,7 @@ exports.getMatchesAndConversations = async (req, res) => {
       );
 
       if (!userStatus) {
-        console.warn(`Status za korisnika ${currentUser._id} nije pronađen u konverzaciji ${conv._id}.`);
+        console.warn(`[GET MATCHES & CONVERSATIONS] Status for user ${currentUser._id} not found in conversation ${conv._id}.`);
         continue;
       }
 
@@ -586,9 +599,12 @@ exports.getMatchesAndConversations = async (req, res) => {
       return timeB - timeA;
     });
 
+    console.log("[GET MATCHES & CONVERSATIONS] Final new matches:", newMatches);
+    console.log("[GET MATCHES & CONVERSATIONS] Final conversations:", existingConversations);
+
     res.status(200).json({ newMatches, conversations: existingConversations });
   } catch (error) {
-    console.error("[Controller] GET MATCHES & CONVERSATIONS - Error:", error);
+    console.error("[GET MATCHES & CONVERSATIONS] Error:", error);
     res.status(500).json({ message: "Greška servera" });
   }
 };
@@ -736,6 +752,15 @@ exports.getIncomingLikes = async (req, res) => {
       return res.status(404).json({ message: 'User not found' });
     }
 
+    // Očisti ID-jeve za likes i matches
+    const incomingLikeIds = (user.likes || [])
+      .filter(id => id) // izbaci null/undefined
+      .map(id => id.toString());
+
+    const matchIds = (user.matches || [])
+      .filter(id => id)
+      .map(id => id.toString());
+
     // Filter parametri iz query stringa
     const { minAge, maxAge, gender, latitude, longitude, maxDistance } = req.query;
     const min = Number(minAge) || 18;
@@ -745,11 +770,11 @@ exports.getIncomingLikes = async (req, res) => {
     const maxBirthDate = new Date(today.getFullYear() - min, today.getMonth(), today.getDate());
 
     // Pronađi sve korisnike koji su lajkovali trenutnog korisnika
-    const incomingLikeIds = user.likes || [];
-    console.log('[INCOMING LIKES] incomingLikeIds:', incomingLikeIds);
-
     let query = {
-      _id: { $in: incomingLikeIds, $nin: [user._id, ...(user.matches || [])] },
+      _id: { 
+        $in: incomingLikeIds,
+        $nin: [user._id.toString(), ...matchIds]
+      },
       birthDate: { $gte: minBirthDate, $lte: maxBirthDate },
     };
     if (gender === 'male' || gender === 'female') {
@@ -791,6 +816,7 @@ exports.getIncomingLikes = async (req, res) => {
         jobTitle
         education
         location
+        locationCity
         showLocation
         gender
         sexualOrientation
@@ -907,5 +933,46 @@ exports.unmatchUser = async (req, res) => {
     return res.status(500).json({
       message: "Greška servera prilikom prekida spoja",
     });
+  }
+};
+exports.createMatchAndNotify = async (userId1, userId2) => {
+  try {
+    // 1. Provera da li match već postoji (da se ne dupliraju unosi)
+    const existingMatch = await Match.findOne({
+      $or: [
+        { user1: userId1, user2: userId2 },
+        { user1: userId2, user2: userId1 }
+      ]
+    });
+
+    if (existingMatch) {
+      console.log(`[Controller] Match već postoji između ${userId1} i ${userId2}`);
+      return;
+    }
+
+    // 2. Kreiranje match-a
+    await Match.create({ user1: userId1, user2: userId2 });
+    console.log(`[Controller] Match uspešno kreiran u bazi.`);
+
+    // 3. Slanje notifikacija (koristimo Promise.allSettled da bi obe prošle nezavisno)
+    const notificationPromises = [
+      sendMatchNotification(userId1, 'Novi Match! 🔥', 'Čestitamo! Imate novi match.'),
+      sendMatchNotification(userId2, 'Novi Match! 🔥', 'Čestitamo! Imate novi match.')
+    ];
+
+    const results = await Promise.allSettled(notificationPromises);
+
+    results.forEach((result, index) => {
+      const currentUserId = index === 0 ? userId1 : userId2;
+      if (result.status === 'fulfilled') {
+        console.log(`[Controller] Notifikacija uspešno poslata korisniku: ${currentUserId}`);
+      } else {
+        console.error(`[Controller] Slanje nije uspelo za ${currentUserId}:`, result.reason);
+      }
+    });
+
+  } catch (error) {
+    console.error('[Controller] Fatalna greška u createMatchAndNotify:', error);
+    throw error;
   }
 };

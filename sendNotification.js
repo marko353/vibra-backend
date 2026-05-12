@@ -1,120 +1,130 @@
 const admin = require('firebase-admin');
 const serviceAccount = require('./firebase-service-account.json');
-const mongoose = require('mongoose'); // Dodavanje `require` za mongoose na vrhu fajla
+const User = require('./models/User');
 
-// Inicijalizacija backenda
+// Inicijalizacija Firebase Admin SDK
 admin.initializeApp({
   credential: admin.credential.cert(serviceAccount)
 });
 
-// Dodavanje logike za uklanjanje nevažećih FCM tokena
+// Uklanjanje nevažećih FCM tokena iz baze
 async function handleInvalidToken(token) {
-    try {
-        await User.updateMany(
-            { fcmToken: token },
-            { $unset: { fcmToken: "" } } // Uklanjanje tokena iz baze
-        );
-        console.log(`Nevažeći FCM token uklonjen: ${token}`);
-    } catch (error) {
-        console.error(`Greška pri uklanjanju FCM tokena: ${error.message}`);
-    }
+  try {
+    await User.updateMany(
+      { fcmToken: token },
+      { $unset: { fcmToken: "" } }
+    );
+    console.log(`⚠️ [FCM] Nevažeći token uklonjen iz baze: ${token}`);
+  } catch (error) {
+    console.error(`❌ [FCM] Greška pri uklanjanju nevažećeg tokena: ${error.message}`);
+  }
 }
 
-// Dodavanje logova za praćenje slanja notifikacija
+// Osnovna funkcija za slanje push notifikacija
 const sendPushNotification = async (fcmToken, title, body, data = {}) => {
   try {
-    console.log("[sendPushNotification] Preparing to send notification:", {
-      fcmToken,
+    console.log("[sendPushNotification] Šaljem notifikaciju:", {
+      fcmToken: fcmToken?.substring(0, 20) + "...",
       title,
       body,
       data,
     });
 
-    // Convert all data values to strings
+    // Sve vrednosti u data moraju biti stringovi (FCM zahtev)
     const stringifiedData = Object.fromEntries(
-      Object.entries(data).map(([key, value]) => [key, String(value)])
+      Object.entries({ ...data, title, body }).map(([key, value]) => [key, String(value)])
     );
 
     const message = {
-      notification: {
-        title: title,
-        body: body,
-      },
+      // FIX: Uklonjen 'notification' objekat — kada postoji 'notification',
+      // Firebase prikazuje svoju default notifikaciju u background/quit stanju
+      // i ignoriše Notifee. Sa samo 'data' payloadom, Notifee ima punu kontrolu
+      // nad izgledom notifikacije u svim stanjima (foreground, background, quit).
+      data: stringifiedData,
       token: fcmToken,
-      data: {
-        ...stringifiedData,
-        // chatId removed
+      android: {
+        // Prioritet mora biti HIGH da bi se data-only poruka isporučila
+        // čak i kada je uređaj u sleep modu
+        priority: "high",
       },
     };
 
-    try {
-      const response = await admin.messaging().send(message);
-      console.log('✅ Notifikacija uspešno poslata:', response);
-      return response;
-    } catch (error) {
-      console.error('❌ Greška pri slanju notifikacije:', error);
-      if (error.errorInfo && error.errorInfo.code === 'messaging/registration-token-not-registered') {
-        console.error("⚠️ NotRegistered greška: Uklanjanje nevažećeg tokena.");
-        await handleInvalidToken(fcmToken);
-      } else {
-        throw error;
-      }
-    }
+    const response = await admin.messaging().send(message);
+    console.log('✅ [sendPushNotification] Notifikacija uspešno poslata:', response);
+    return response;
   } catch (error) {
-    console.error("[sendPushNotification] Error while sending notification:", error);
-    throw error;
+    if (error.errorInfo?.code === 'messaging/registration-token-not-registered') {
+      console.warn("⚠️ [sendPushNotification] Nevažeći token, uklanjam iz baze...");
+      await handleInvalidToken(fcmToken);
+    } else {
+      console.error('❌ [sendPushNotification] Greška pri slanju:', error);
+      throw error;
+    }
   }
 };
 
-// Funkcija za slanje push notifikacije kada se desi novi match
-async function sendMatchNotification(userId, title, body) {
+// Slanje notifikacije za novi match
+async function sendMatchNotification(userToNotify, matchUser, conversationId) {
   try {
-    console.log("[sendMatchNotification] Fetching user with ID:", userId);
-
-    if (!mongoose.Types.ObjectId.isValid(userId)) {
-      console.error("[sendMatchNotification] Invalid userId provided:", userId);
+    if (!userToNotify?.fcmToken || !conversationId) {
+      console.error("[sendMatchNotification] Nedostaju obavezni parametri:", {
+        fcmToken: userToNotify?.fcmToken ? "postoji ✅" : "ne postoji ❌",
+        conversationId: conversationId ? "postoji ✅" : "ne postoji ❌",
+      });
       return;
     }
 
-    const User = require("./models/User");
-    const user = await User.findById(userId).select("+fcmToken");
+    await sendPushNotification(
+      userToNotify.fcmToken,
+      "Novi Match! 💘",
+      `${matchUser.fullName || 'Neko'} ti je uzvratio lajk!`,
+      {
+        chatId: conversationId.toString(),
+        userId: matchUser._id.toString(),
+        userName: matchUser.fullName || "",
+        userAvatar: matchUser.avatar || "",
+        type: "MATCH",
+      }
+    );
 
-    if (!user) {
-      console.error("[sendMatchNotification] User not found with ID:", userId);
-      return;
-    }
-
-    const fcmToken = user.fcmToken;
-
-    if (!fcmToken) {
-      console.log("[sendMatchNotification] No FCM token found for user:", userId);
-      return;
-    }
-
-    try {
-      console.log("[sendMatchNotification] Sending push notification to user:", userId, "with token:", fcmToken);
-      await sendPushNotification(fcmToken, title, body, { userId });
-      console.log("[sendMatchNotification] Push notification sent successfully to user:", userId);
-    } catch (pushError) {
-      console.error("[sendMatchNotification] Error while sending push notification:", pushError);
-    }
+    console.log("✅ [sendMatchNotification] Match notifikacija poslata.");
   } catch (error) {
-    console.error("[sendMatchNotification] Error in sendMatchNotification:", error);
+    console.error("❌ [sendMatchNotification] Greška:", error);
     throw error;
   }
 }
 
-// TEST: Pozovi funkciju sa tvojim tokenom koji si dobio u terminalu
-const MY_TOKEN = "eBqVGLPJTv-Gmtl5EBMywp:APA91bHeilnxPRX7YUi_L_ev3gvZ5iulYj10_tITIzvjHFt8Cc6BDztcb4hxyyRgfGaW3PFRPyBjXS5jZEQeK9bHS7blO_G3EkGZQDjU_qatDekJH7iwM-A";
+// Slanje notifikacije za novu poruku
+async function sendMessageNotification(userToNotify, sender, messageContent, conversationId) {
+  try {
+    if (!userToNotify?.fcmToken || !messageContent) {
+      console.error("[sendMessageNotification] Nedostaju obavezni parametri:", {
+        fcmToken: userToNotify?.fcmToken ? "postoji ✅" : "ne postoji ❌",
+        messageContent: messageContent ? "postoji ✅" : "ne postoji ❌",
+      });
+      return;
+    }
 
-console.log("Invoking sendPushNotification with token:", MY_TOKEN);
-sendPushNotification(
-  MY_TOKEN, 
-  "Novi Match! 🔥", 
-  "Neko ti je upravo uzvratio lajk na Vibri."
-);
+    await sendPushNotification(
+      userToNotify.fcmToken,
+      sender.fullName || "Nova poruka",
+      messageContent,
+      {
+        // FIX: Dodat chatId/conversationId da navigacija radi ispravno pri kliku
+        chatId: conversationId?.toString() || "",
+        receiverId: userToNotify._id.toString(),
+        userId: sender._id.toString(),
+        userName: sender.fullName || "",
+        userAvatar: sender.avatar || "",
+        type: "MESSAGE",
+      }
+    );
 
-console.log("Invoking sendMatchNotification with userId and message:", "userId", "Novi Match! 🔥", "Neko ti je upravo uzvratio lajk na Vibri.");
-sendMatchNotification("userId", "Novi Match! 🔥", "Neko ti je upravo uzvratio lajk na Vibri.");
+    console.log("✅ [sendMessageNotification] Poruka notifikacija poslata.");
+  } catch (error) {
+    console.error("❌ [sendMessageNotification] Greška:", error);
+    throw error;
+  }
+}
 
-module.exports = { sendMatchNotification };
+module.exports = { sendPushNotification, sendMatchNotification, sendMessageNotification };

@@ -5,6 +5,9 @@ const Conversation = require("../models/Conversation");
 const Message = require("../models/Message");
 const Match = require('../models/Match');
 const { sendMatchNotification } = require('../sendNotification');
+const mongoose = require('mongoose'); // Ensure mongoose is imported
+
+const isMongoConnected = () => mongoose.connection.readyState === 1;
 
 // ================= HELPER FUNKCIJE =================
 function tryParseJSON(value) {
@@ -94,14 +97,25 @@ exports.getAllUsers = async (req, res) => {
 
 // ================= GET PROFILE =================
 exports.getProfile = async (req, res) => {
-  try {
-    const user = await User.findById(req.user.id).select('-password').lean();
-    if (!user) return res.status(404).json({ message: "User not found" });
-    res.status(200).json(user);
-  } catch (error) {
-    console.error("[Controller] GET PROFILE - Error:", error);
-    res.status(500).json({ message: "Server error" });
-  }
+  if (!isMongoConnected()) {
+    console.error("[GET PROFILE] MongoDB not connected");
+    return res.status(503).json({ message: "Database unavailable. Please try again later." });
+  }
+
+  try {
+    const user = await User.findById(req.user.id).select('-password').lean();
+    if (!user) {
+      console.warn(`[GET PROFILE] User not found: ${req.user.id}`);
+      return res.status(404).json({ message: "User not found" });
+    }
+    res.status(200).json(user);
+  } catch (error) {
+    console.error("[Controller] GET PROFILE - Error:", error.message);
+    if (error.name === 'MongooseError' || error.name === 'MongoNetworkError') {
+      return res.status(503).json({ message: "Database unavailable. Please try again later." });
+    }
+    res.status(500).json({ message: "Server error" });
+  }
 };
 
 // ================= GET PROFILE BY ID =================
@@ -441,8 +455,12 @@ exports.swipeAction = async (req, res) => {
         }
 
         // 4. Poziv funkcije za slanje notifikacije
-        console.log("📤 Pozivam funkciju sendMatchNotification za korisnika:", targetUser._id);
-        await sendMatchNotification(targetUser._id, "New Match!", `${user.fullName} just matched with you!`);
+        console.log("📤 Pozivam funkciju sendMatchNotification sa parametrima:", {
+          userToNotify: targetUser,
+          matchUser: user,
+          conversationId: conversation._id
+        });
+        await sendMatchNotification(targetUser, user, conversation._id);
 
         return res.json({
           match: true,
@@ -499,7 +517,13 @@ exports.swipeAction = async (req, res) => {
   });
 
 } catch (error) {
-  console.error("❌ swipeAction error:", error);
+  console.error("[swipeAction] Error details:", {
+    message: error.message,
+    stack: error.stack,
+    userId: req.user.id,
+    targetUserId: req.body.targetUserId,
+    action: req.body.action
+  });
   return res.status(500).json({
     message: "Server error",
   });
@@ -837,7 +861,12 @@ exports.getIncomingLikes = async (req, res) => {
     }
     return res.json({ likes: users });
   } catch (err) {
-    console.error('[INCOMING LIKES] Greška:', err);
+    console.error('[INCOMING LIKES] Greška:', {
+      message: err.message,
+      stack: err.stack,
+      userId: req.user.id,
+      query: req.query
+    });
     return res.status(500).json({ message: "Server error" });
   }
 };
@@ -956,8 +985,16 @@ exports.createMatchAndNotify = async (userId1, userId2) => {
 
     // 3. Slanje notifikacija (koristimo Promise.allSettled da bi obe prošle nezavisno)
     const notificationPromises = [
-      sendMatchNotification(userId1, 'Novi Match! 🔥', 'Čestitamo! Imate novi match.'),
-      sendMatchNotification(userId2, 'Novi Match! 🔥', 'Čestitamo! Imate novi match.')
+      sendMatchNotification(
+        { fcmToken: userId1.fcmToken, _id: userId1 },
+        { fullName: userId2.fullName, avatar: userId2.avatar, _id: userId2 },
+        conversationId
+      ),
+      sendMatchNotification(
+        { fcmToken: userId2.fcmToken, _id: userId2 },
+        { fullName: userId1.fullName, avatar: userId1.avatar, _id: userId1 },
+        conversationId
+      )
     ];
 
     const results = await Promise.allSettled(notificationPromises);

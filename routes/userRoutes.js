@@ -22,7 +22,7 @@ const {
   markAsRead,
   saveUserFilters,
   getUserFilters,
-  createMatchAndNotify // Importovano iz kontrolera
+  createMatchAndNotify
 } = require('../controllers/userController');
 
 const User = require("../models/User");
@@ -31,7 +31,7 @@ const router = express.Router();
 const storage = multer.memoryStorage();
 const upload = multer({ storage });
 
-// ========== TRAJNI FILTERI ==========
+/* ===================== TRAJNI FILTERI ===================== */
 router.patch('/filters', authMiddleware, saveUserFilters);
 router.get('/filters', authMiddleware, getUserFilters);
 
@@ -41,43 +41,128 @@ router.post('/login', (req, res, next) => {
   next();
 }, login);
 
+/* ===================== SAVE FCM TOKEN ===================== */
+/*
+  OVO MORA DA BUDE PRE:
+  router.get('/:userId', ...)
+
+  Poziva se svaki put nakon login-a ili app starta.
+*/
+router.post('/save-fcm-token', authMiddleware, async (req, res) => {
+  try {
+    console.log("Request body:", req.body); // Logovanje za debagovanje
+
+    const { fcmToken } = req.body; // Promenjeno sa 'token' na 'fcmToken'
+
+    if (!fcmToken) {
+      return res.status(400).json({
+        success: false,
+        message: 'FCM token missing'
+      });
+    }
+
+    const updatedUser = await User.findByIdAndUpdate(
+      req.user.id,
+      {
+        fcmToken: fcmToken
+      },
+      {
+        new: true
+      }
+    );
+
+    if (!updatedUser) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found'
+      });
+    }
+
+    console.log(
+      `✅ FCM token sačuvan za ${updatedUser.fullName}:`,
+      fcmToken
+    );
+
+    res.json({
+      success: true
+    });
+
+  } catch (error) {
+    console.error('❌ SAVE FCM TOKEN ERROR:', error);
+
+    res.status(500).json({
+      success: false,
+      message: 'Server error'
+    });
+  }
+});
+
 /* ===================== UPLOAD PROFILE PICTURE ===================== */
 router.post(
   '/upload-profile-picture',
   authMiddleware,
   upload.single('profilePicture'),
   async (req, res) => {
-    if (!req.file) return res.status(400).json({ message: "Nema slike za upload" });
+    if (!req.file) {
+      return res.status(400).json({
+        message: "Nema slike za upload"
+      });
+    }
 
     const position = Number(req.body.position);
+
     if (Number.isNaN(position) || position < 0 || position > 8) {
-      return res.status(400).json({ message: "Pozicija slike nije validna" });
+      return res.status(400).json({
+        message: "Pozicija slike nije validna"
+      });
     }
 
     try {
       const result = await new Promise((resolve, reject) => {
         const stream = cloudinary.uploader.upload_stream(
           { folder: "profile_pictures" },
-          (error, result) => (error ? reject(error) : resolve(result))
+          (error, result) => (
+            error ? reject(error) : resolve(result)
+          )
         );
+
         stream.end(req.file.buffer);
       });
 
       const user = await User.findById(req.user.id);
-      if (!user) return res.status(404).json({ message: "Korisnik nije pronađen" });
+
+      if (!user) {
+        return res.status(404).json({
+          message: "Korisnik nije pronađen"
+        });
+      }
 
       const pictures = [...user.profilePictures];
-      while (pictures.length < position + 1) pictures.push(null);
+
+      while (pictures.length < position + 1) {
+        pictures.push(null);
+      }
+
       pictures[position] = result.secure_url;
 
       user.profilePictures = pictures.filter(Boolean);
-      if (!user.avatar) user.avatar = result.secure_url;
+
+      if (!user.avatar) {
+        user.avatar = result.secure_url;
+      }
 
       await user.save();
-      res.status(200).json({ imageUrl: result.secure_url });
+
+      res.status(200).json({
+        imageUrl: result.secure_url
+      });
+
     } catch (err) {
       console.error('[UPLOAD ERROR]', err);
-      res.status(500).json({ message: 'Greška prilikom uploada slike' });
+
+      res.status(500).json({
+        message: 'Greška prilikom uploada slike'
+      });
     }
   }
 );
@@ -85,96 +170,157 @@ router.post(
 /* ===================== PROFILE PICTURES ===================== */
 router.get('/profile-pictures', authMiddleware, async (req, res) => {
   const user = await User.findById(req.user.id);
-  if (!user) return res.status(404).json({ message: "Korisnik nije pronađen" });
-  res.json({ profilePictures: user.profilePictures });
+
+  if (!user) {
+    return res.status(404).json({
+      message: "Korisnik nije pronađen"
+    });
+  }
+
+  res.json({
+    profilePictures: user.profilePictures
+  });
 });
 
-router.delete('/delete-profile-picture', authMiddleware, deleteProfilePicture);
+router.delete(
+  '/delete-profile-picture',
+  authMiddleware,
+  deleteProfilePicture
+);
 
 /* ===================== LOCATION ===================== */
 router.patch('/update-location', authMiddleware, async (req, res) => {
-  const { latitude, longitude, accuracy, locationCity, showLocation } = req.body;
+  const {
+    latitude,
+    longitude,
+    accuracy,
+    locationCity,
+    showLocation
+  } = req.body;
 
   const update = showLocation
-    ? { location: { latitude, longitude, accuracy, locationCity }, showLocation: true }
-    : { location: null, showLocation: false };
+    ? {
+        location: {
+          latitude,
+          longitude,
+          accuracy,
+          locationCity
+        },
+        showLocation: true
+      }
+    : {
+        location: null,
+        showLocation: false
+      };
 
-  const user = await User.findByIdAndUpdate(req.user.id, update, { new: true });
-  if (!user) return res.status(404).json({ message: "Korisnik nije pronađen" });
+  const user = await User.findByIdAndUpdate(
+    req.user.id,
+    update,
+    { new: true }
+  );
 
-  res.json({ location: user.location, showLocation: user.showLocation });
+  if (!user) {
+    return res.status(404).json({
+      message: "Korisnik nije pronađen"
+    });
+  }
+
+  res.json({
+    location: user.location,
+    showLocation: user.showLocation
+  });
 });
 
 /* ===================== POTENTIAL MATCHES ===================== */
-router.get('/potential-matches', authMiddleware, getPotentialMatches);
+router.get(
+  '/potential-matches',
+  authMiddleware,
+  getPotentialMatches
+);
 
 /* ===================== REORDER PROFILE PICTURES ===================== */
-router.put('/reorder-profile-pictures', authMiddleware, reorderProfilePictures);
+router.put(
+  '/reorder-profile-pictures',
+  authMiddleware,
+  reorderProfilePictures
+);
 
 /* ===================== SWIPE ===================== */
 router.post('/swipe', authMiddleware, swipeAction);
 
 /* ===================== MESSAGES ===================== */
 router.post('/message', authMiddleware, postMessage);
-router.get('/chat/:chatId/messages', authMiddleware, getMessages);
-router.post('/chat/:chatId/message', authMiddleware, postMessage);
-router.post('/chat/:chatId/mark-as-read', authMiddleware, markAsRead);
+
+router.get(
+  '/chat/:chatId/messages',
+  authMiddleware,
+  getMessages
+);
+
+router.post(
+  '/chat/:chatId/message',
+  authMiddleware,
+  postMessage
+);
+
+router.post(
+  '/chat/:chatId/mark-as-read',
+  authMiddleware,
+  markAsRead
+);
 
 /* ===================== INCOMING LIKES ===================== */
-router.get('/incoming-likes', authMiddleware, getIncomingLikes);
+router.get(
+  '/incoming-likes',
+  authMiddleware,
+  getIncomingLikes
+);
 
 /* ===================== MATCHES & UNMATCH ===================== */
-router.get('/my-matches', authMiddleware, getMatchesAndConversations);
-router.delete('/match/:chatId', authMiddleware, unmatchUser);
+router.get(
+  '/my-matches',
+  authMiddleware,
+  getMatchesAndConversations
+);
 
-/* ===================== USERS & PROFILE ===================== */
-router.get('/all-users', authMiddleware, getAllUsers);
-router.get('/profile', authMiddleware, getProfile);
+router.delete(
+  '/match/:chatId',
+  authMiddleware,
+  unmatchUser
+);
 
-/* ===================== FCM TOKEN (NOVO) ===================== */
-router.post('/save-fcm-token', authMiddleware, async (req, res) => {
-  const { fcmToken } = req.body;
-  const userId = req.user.id; // Uzimamo ID iz dekodovanog tokena
-
-  if (!fcmToken) {
-    return res.status(400).json({ error: 'Missing fcmToken' });
-  }
-
-  try {
-    const user = await User.findByIdAndUpdate(
-      userId, 
-      { fcmToken }, 
-      { new: true }
-    );
-
-    if (!user) {
-      return res.status(404).json({ error: 'User not found' });
-    }
-
-    console.log(`✅ FCM token uspešno ažuriran za: ${user.fullName}`);
-    res.status(200).json({ message: 'Token saved successfully' });
-  } catch (error) {
-    console.error(`❌ Greška pri čuvanju FCM tokena: ${error.message}`);
-    res.status(500).json({ error: 'Failed to save token' });
-  }
-});
-
-/* ===================== MATCH NOTIFICATION (NOVO) ===================== */
+/* ===================== MATCH NOTIFICATION ===================== */
 router.post('/match-notify', authMiddleware, async (req, res) => {
   const { userId2 } = req.body;
   const userId1 = req.user.id;
 
   try {
     await createMatchAndNotify(userId1, userId2);
-    res.status(200).json({ message: 'Match created and notifications sent' });
+
+    res.status(200).json({
+      message: 'Match created and notifications sent'
+    });
+
   } catch (error) {
     console.error('Error creating match:', error);
-    res.status(500).json({ error: 'Failed to create match' });
+
+    res.status(500).json({
+      error: 'Failed to create match'
+    });
   }
 });
 
+/* ===================== USERS & PROFILE ===================== */
+router.get('/all-users', authMiddleware, getAllUsers);
+
+router.get('/profile', authMiddleware, getProfile);
+
 /* ===================== UPDATE PROFILE ===================== */
-router.put('/update-profile', authMiddleware, updateProfile);
+router.put(
+  '/update-profile',
+  authMiddleware,
+  updateProfile
+);
 
 /* ⚠️ DINAMIČKA RUTA UVEK NA KRAJU */
 router.get('/:userId', authMiddleware, getProfileById);

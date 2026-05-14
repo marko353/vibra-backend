@@ -7,6 +7,8 @@ const cors = require("cors");
 const http = require("http");
 const { Server } = require("socket.io");
 const jwt = require("jsonwebtoken");
+const User = require('./models/User'); // Proveri putanju do modela
+const { sendMessageNotification } = require('./sendNotification'); // Proveri putanju do servisa
 
 // Routes & models
 const authRoutes = require("./routes/authRoutes");
@@ -120,22 +122,25 @@ io.on("connection", (socket) => {
     console.log("✉️ sendMessage", { from: userId, to: receiverId });
 
     if (!receiverId || !text) {
+      console.error("❌ sendMessage: Nedostaju podaci", { receiverId, text });
       return callback?.({ status: "error", message: "Nedostaju podaci" });
     }
 
     try {
+      console.log("🔍 Tražim konverzaciju između korisnika", { userId, receiverId });
       const conversation = await Conversation.findOne({
         "participants.user": { $all: [userId, receiverId] },
       });
 
       if (!conversation) {
+        console.error("❌ Konverzacija ne postoji", { userId, receiverId });
         return callback?.({
           status: "error",
           message: "Konverzacija ne postoji",
         });
       }
 
-      // 1️⃣ Sačuvaj poruku
+      console.log("💾 Kreiram poruku za konverzaciju", { conversationId: conversation._id });
       const message = await Message.create({
         conversationId: conversation._id,
         sender: userId,
@@ -145,7 +150,7 @@ io.on("connection", (socket) => {
 
       conversation.messages.push(message._id);
 
-      // 2️⃣ Update participant statusa
+      console.log("🔄 Ažuriram status učesnika u konverzaciji");
       conversation.participants = conversation.participants.map((p) => {
         const obj = p.toObject();
 
@@ -167,26 +172,48 @@ io.on("connection", (socket) => {
 
       const payload = message.toObject();
 
-      // 3️⃣ EMITUJ PRIMAOCU
+      console.log("📤 Emitujem poruku primaocu preko Socket.IO", { receiverId });
       const receiverSockets = onlineUsers.get(String(receiverId));
-
-      console.log(
-        "📤 emit receiveMessage → receiver:",
-        receiverId,
-        "sockets:",
-        receiverSockets
-      );
-
       if (receiverSockets) {
         receiverSockets.forEach((sid) => {
+          console.log("➡️ Emitujem na socket", { sid });
           io.to(sid).emit("receiveMessage", payload);
         });
+      } else {
+        console.warn("⚠️ Primalac nije online", { receiverId });
       }
 
-      // 4️⃣ CALLBACK POŠILJAOCU
+      console.log("🔔 Pokrećem asinhrono slanje push notifikacije");
+      (async () => {
+        try {
+          console.log("🔍 Dohvatam podatke za notifikaciju", { receiverId, userId });
+          const receiver = await User.findById(receiverId).select('fcmToken _id');
+          const sender = await User.findById(userId).select('fullName avatar _id');
+
+          if (receiver && receiver.fcmToken) {
+            console.log("🔔 Pozivam sendMessageNotification za", {
+              receiverId: receiver._id,
+              senderId: sender._id,
+              fcmToken: receiver.fcmToken.substring(0, 10),
+            });
+            await sendMessageNotification(
+              receiver, 
+              sender, 
+              text, 
+              conversation._id
+            );
+          } else {
+            console.warn("⚠️ Primalac nema FCM token ili nije pronađen", { receiverId });
+          }
+        } catch (pushErr) {
+          console.error("❌ Greška pri slanju push notifikacije", pushErr);
+        }
+      })();
+
+      console.log("✅ Poruka uspešno obrađena, šaljem callback pošiljaocu");
       callback?.({ status: "ok", message: payload });
     } catch (err) {
-      console.error("❌ sendMessage error:", err);
+      console.error("❌ sendMessage error", err);
       callback?.({ status: "error", message: "Server error" });
     }
   });

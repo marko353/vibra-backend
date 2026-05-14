@@ -371,13 +371,12 @@ exports.swipeAction = async (req, res) => {
   try {
     const { targetUserId, action } = req.body;
 
+    // 1. Fetch korisnika
     const user = await User.findById(req.user.id);
     const targetUser = await User.findById(targetUserId);
 
     if (!user || !targetUser) {
-      return res.status(404).json({
-        message: "Korisnik nije pronađen",
-      });
+      return res.status(404).json({ message: "Korisnik nije pronađen" });
     }
 
     console.log("➡️ SWIPE ACTION", {
@@ -390,8 +389,7 @@ exports.swipeAction = async (req, res) => {
     if (action === "like") {
       console.log(`❤️ LIKE: ${user._id} lajkuje ${targetUser._id}`);
 
-      // 1️⃣ Provera uzajamnosti (Da li je on MENE već lajkovali?)
-      // user.likes sadrži ID-jeve ljudi koji su lajkovali 'user'-a
+      // Provera da li je targetUser već lajkovao mene (stoji u mom likes nizu)
       const isMutualLike = user.likes.some(
         (id) => id.toString() === targetUser._id.toString()
       );
@@ -402,46 +400,37 @@ exports.swipeAction = async (req, res) => {
       if (isMutualLike) {
         console.log("🔥 MATCH OCCURRED - Obostrani lajk detektovan");
 
-        // 1. Upis match-a kod oba korisnika
+        // Upis match-a kod oba korisnika
         user.matches.addToSet(targetUser._id);
         targetUser.matches.addToSet(user._id);
 
-        // 2. Očisti 'incoming like' - pošto ste sada match, ne treba da stoji u Likes tabu
-        // Brišemo targetUser-a iz tvoje liste lajkova (umanjuje tvoj brojač)
+        // Očisti 'incoming like' iz niza (više nije samo like, sad je match)
         user.likes.pull(targetUser._id);
-        
-        // Za svaki slučaj čistimo i tvoj ID iz njegove liste ako je postojao
         targetUser.likes.pull(user._id);
 
-        // 3. Kreiranje ili pronalaženje konverzacije
-        let conversation = await Conversation.findOne({
-          "participants.user": { $all: [user._id, targetUser._id] },
-        });
-
-        if (!conversation) {
-          console.log("💬 Kreiram novu konverzaciju za match");
-          conversation = await Conversation.create({
-            participants: [
-              {
-                user: user._id,
-                is_new: true,
-                has_unread_messages: false,
-                has_sent_message: false,
-              },
-              {
-                user: targetUser._id,
-                is_new: true,
-                has_unread_messages: false,
-                has_sent_message: false,
-              },
-            ],
+        // Kreiranje ili pronalaženje konverzacije
+        let conversationId = null;
+        try {
+          let conversation = await Conversation.findOne({
+            "participants.user": { $all: [user._id, targetUser._id] },
           });
+
+          if (!conversation) {
+            console.log("💬 Kreiram novu konverzaciju za match");
+            conversation = await Conversation.create({
+              participants: [{ user: user._id }, { user: targetUser._id }],
+            });
+          }
+          conversationId = conversation._id.toString();
+        } catch (e) {
+          console.error("❌ conversation error:", e);
         }
 
+        // Čuvanje promena u bazi
         await user.save();
         await targetUser.save();
 
-        // 🔔 SOCKET: Obavesti drugu osobu da se desio match
+        // 🔔 SOCKET: Obavesti drugu osobu odmah
         const targetSockets = global.onlineUsers.get(targetUser._id.toString());
         if (targetSockets) {
           targetSockets.forEach((sid) => {
@@ -454,13 +443,18 @@ exports.swipeAction = async (req, res) => {
           });
         }
 
-        // 4. Poziv funkcije za slanje notifikacije
-        console.log("📤 Pozivam funkciju sendMatchNotification sa parametrima:", {
-          userToNotify: targetUser,
-          matchUser: user,
-          conversationId: conversation._id
-        });
-        await sendMatchNotification(targetUser, user, conversation._id);
+        // 🔔 PUSH NOTIFICATION
+        if (targetUser.fcmToken) {
+          console.log("📲 SENDING MATCH NOTIFICATION TO:", targetUser.fullName);
+          
+          // SLANJE KAO ČISTI PARAMETRI (Opcija A)
+          // Ovo rešava problem gde su matchUser i conversationId bili undefined
+          await sendMatchNotification(
+            targetUser,      // Prvi parametar: userToNotify
+            user,            // Drugi parametar: matchUser (ti)
+            conversationId   // Treći parametar: ID konverzacije
+          );
+        }
 
         return res.json({
           match: true,
@@ -472,63 +466,50 @@ exports.swipeAction = async (req, res) => {
         });
       }
 
-// ================= CASE B: SAMO LIKE =================
-    console.log("👍 Nema matcha - dodajem lajk u targetUser.likes");
+      // ================= CASE B: SAMO LIKE =================
+      console.log("👍 Nema matcha - dodajem lajk u targetUser.likes");
 
-    // Dodaj tvoj ID u NJEGOVU listu lajkova (da bi se tebi pojavilo kod njega u Likes tabu)
-    targetUser.likes.addToSet(user._id);
-    await targetUser.save();
+      targetUser.likes.addToSet(user._id);
+      await targetUser.save();
 
-    // 🔔 SOCKET: Javi drugoj osobi da je dobila lajk (povećava mu badge/brojač)
-    const targetSockets = global.onlineUsers.get(targetUser._id.toString());
-    if (targetSockets) {
-      targetSockets.forEach((sid) => {
-        global.io.to(sid).emit("likeReceived", {
-          fromUserId: user._id,
-          fullName: user.fullName,
-          avatar: user.avatar,
-          birthDate: user.birthDate, // <--- DODATO: Sada šaljemo i datum rođenja
+      // 🔔 SOCKET: Javi drugoj osobi da je dobila lajk
+      const targetSockets = global.onlineUsers.get(targetUser._id.toString());
+      if (targetSockets) {
+        targetSockets.forEach((sid) => {
+          global.io.to(sid).emit("likeReceived", {
+            fromUserId: user._id,
+            fullName: user.fullName,
+            avatar: user.avatar,
+            birthDate: user.birthDate,
+          });
         });
+      }
+
+      return res.json({
+        match: false,
+        message: "Like sačuvan",
       });
     }
 
-    return res.json({
-      match: false,
-      message: "Like sačuvan",
-    });
+    // ================= ACTION: DISLIKE =================
+    if (action === "dislike") {
+      console.log("👎 DISLIKE");
+      user.dislikes.addToSet(targetUser._id);
+      await user.save();
+
+      return res.json({
+        success: true,
+        message: "Dislike sačuvan",
+      });
+    }
+
+    return res.status(400).json({ message: "Nepoznata akcija" });
+
+  } catch (error) {
+    console.error("[swipeAction] Kritična greška:", error.message);
+    return res.status(500).json({ message: "Server error" });
   }
-
-  // ================= ACTION: DISLIKE =================
-  if (action === "dislike") {
-    console.log("👎 DISLIKE");
-
-    // Dodajemo u dislikes da ga ne bi ponovo videli u potential matches
-    user.dislikes.addToSet(targetUser._id);
-    await user.save();
-
-    return res.json({
-      success: true,
-      message: "Dislike sačuvan",
-    });
-  }
-
-  return res.status(400).json({
-    message: "Nepoznata akcija",
-  });
-
-} catch (error) {
-  console.error("[swipeAction] Error details:", {
-    message: error.message,
-    stack: error.stack,
-    userId: req.user.id,
-    targetUserId: req.body.targetUserId,
-    action: req.body.action
-  });
-  return res.status(500).json({
-    message: "Server error",
-  });
-}
-}
+};
 // ================= GET MATCHES & CONVERSATIONS =================
 exports.getMatchesAndConversations = async (req, res) => {
   try {
@@ -734,8 +715,34 @@ exports.postMessage = async (req, res) => {
 
     conversation.markModified('participants');
     await conversation.save();
-    
-    res.status(201).json({ ...newMessage.toObject(), conversationId: conversation._id.toString() });
+
+    // ================= PUSH NOTIFICATION =================
+    try {
+      const senderUser = await User.findById(senderId);
+      const receiver = await User.findById(targetRecipientId);
+      const sender = await User.findById(senderId);
+
+      if (receiver?.fcmToken) {
+        await sendMessageNotification(
+          receiver,
+          sender,
+          text,
+          conversation._id
+      );
+
+        console.log("✅ Message notification poslata");
+      }
+    } catch (notificationError) {
+      console.error(
+        "❌ Greška pri slanju message notifikacije:",
+        notificationError
+      );
+  }
+
+  res.status(201).json({
+    ...newMessage.toObject(),
+    conversationId: conversation._id.toString()
+  });
   } catch (error) {
     console.error("[Controller] POST MESSAGE - Error:", error);
     res.status(500).json({ message: "Greška prilikom slanja poruke" });

@@ -4,7 +4,7 @@ const bcrypt = require("bcryptjs");
 const Conversation = require("../models/Conversation");
 const Message = require("../models/Message");
 const Match = require('../models/Match');
-const { sendMatchNotification } = require('../sendNotification');
+const { sendMatchNotification, sendMessageNotification } = require('../notificationService');
 const mongoose = require('mongoose'); // Ensure mongoose is imported
 
 const isMongoConnected = () => mongoose.connection.readyState === 1;
@@ -456,14 +456,15 @@ exports.swipeAction = async (req, res) => {
           );
         }
 
-        return res.json({
-          match: true,
-          matchedUser: {
-            _id: targetUser._id,
-            fullName: targetUser.fullName,
-            avatar: targetUser.avatar,
-          },
-        });
+       return res.json({
+  match: true,
+  conversationId,
+  matchedUser: {
+    _id: targetUser._id,
+    fullName: targetUser.fullName,
+    avatar: targetUser.avatar,
+  },
+});
       }
 
       // ================= CASE B: SAMO LIKE =================

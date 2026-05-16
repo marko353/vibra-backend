@@ -7,9 +7,8 @@ const cors = require("cors");
 const http = require("http");
 const { Server } = require("socket.io");
 const jwt = require("jsonwebtoken");
-const User = require('./models/User'); // Proveri putanju do modela
-const { sendMessageNotification } = require('./sendNotification'); // Proveri putanju do servisa
-
+const User = require('./models/User');
+const { sendMatchNotification, sendMessageNotification } = require('./notificationService');
 // Routes & models
 const authRoutes = require("./routes/authRoutes");
 const userRoutes = require("./routes/userRoutes");
@@ -72,11 +71,17 @@ io.on("connection", (socket) => {
   console.log(`🟢 Socket povezan: ${socket.id}, user ${userId}`);
 
   // ================= ONLINE USERS =================
-  if (!onlineUsers.has(userId)) {
-    onlineUsers.set(userId, new Set());
+  // 🛡️ Zaštita od duplih socketa - disconnect stare konekcije
+  if (onlineUsers.has(userId)) {
+    onlineUsers.get(userId).forEach(oldSid => {
+      if (oldSid !== socket.id) {
+        console.log(`🧹 Čistim stari socket za user ${userId}: ${oldSid}`);
+        io.sockets.sockets.get(oldSid)?.disconnect(true);
+      }
+    });
   }
 
-  onlineUsers.get(userId).add(socket.id);
+  onlineUsers.set(userId, new Set([socket.id]));
 
   console.log(
     "👥 ONLINE USERS MAP:",
@@ -92,34 +97,23 @@ io.on("connection", (socket) => {
   // ❤️ LIKE RECEIVED (REAL-TIME LIKES TAB)
   // ==================================================
   socket.on("likeSent", ({ targetUserId }) => {
-    console.log(
-      "❤️ likeSent → from:",
-      userId,
-      "to:",
-      targetUserId
-    );
+    console.log("❤️ likeSent → from:", userId, "to:", targetUserId);
 
     const receiverSockets = onlineUsers.get(String(targetUserId));
-
-    console.log(
-      "📤 emit likeReceived → sockets:",
-      receiverSockets
-    );
+    console.log("📤 emit likeReceived → sockets:", receiverSockets);
 
     if (receiverSockets) {
       receiverSockets.forEach((sid) => {
-        io.to(sid).emit("likeReceived", {
-          fromUserId: userId,
-        });
+        io.to(sid).emit("likeReceived", { fromUserId: userId });
       });
     }
   });
 
   // ==================================================
-  // 📩 SEND MESSAGE (emitujemo SAMO primaocu)
+  // 📩 SEND MESSAGE
   // ==================================================
   socket.on("sendMessage", async ({ receiverId, text }, callback) => {
-    console.log("✉️ sendMessage", { from: userId, to: receiverId });
+    console.log("✉️ sendMessage stigao", { from: userId, to: receiverId });
 
     if (!receiverId || !text) {
       console.error("❌ sendMessage: Nedostaju podaci", { receiverId, text });
@@ -170,7 +164,13 @@ io.on("connection", (socket) => {
       conversation.markModified("participants");
       await conversation.save();
 
-      const payload = message.toObject();
+      const payload = {
+        ...message.toObject(),
+        _id: message._id.toString(),
+        conversationId: message.conversationId.toString(),
+        sender: message.sender.toString(),
+        receiver: message.receiver.toString(),
+      };
 
       console.log("📤 Emitujem poruku primaocu preko Socket.IO", { receiverId });
       const receiverSockets = onlineUsers.get(String(receiverId));
@@ -183,12 +183,17 @@ io.on("connection", (socket) => {
         console.warn("⚠️ Primalac nije online", { receiverId });
       }
 
+      console.log("👥 Online users:", Array.from(onlineUsers.keys()));
+      console.log("📱 Receiver sockets:", onlineUsers.get(String(receiverId)));
+
       console.log("🔔 Pokrećem asinhrono slanje push notifikacije");
       (async () => {
         try {
           console.log("🔍 Dohvatam podatke za notifikaciju", { receiverId, userId });
-          const receiver = await User.findById(receiverId).select('fcmToken _id');
+          const receiver = await User.findById(receiverId).select('fcmToken _id fullName');
           const sender = await User.findById(userId).select('fullName avatar _id');
+
+          console.log(`🔔 NOTIF: ${sender.fullName} → ${receiver?.fullName} | token: ${receiver?.fcmToken?.substring(0, 15)}`);
 
           if (receiver && receiver.fcmToken) {
             console.log("🔔 Pozivam sendMessageNotification za", {
@@ -197,9 +202,9 @@ io.on("connection", (socket) => {
               fcmToken: receiver.fcmToken.substring(0, 10),
             });
             await sendMessageNotification(
-              receiver, 
-              sender, 
-              text, 
+              receiver,
+              sender,
+              text,
               conversation._id
             );
           } else {
@@ -216,6 +221,12 @@ io.on("connection", (socket) => {
       console.error("❌ sendMessage error", err);
       callback?.({ status: "error", message: "Server error" });
     }
+  });
+
+  // ================= JOIN CHAT =================
+  socket.on("joinChat", (chatId) => {
+    socket.join(chatId);
+    console.log(`👤 Korisnik ${userId} se pridružio sobi: ${chatId}`);
   });
 
   // ================= DISCONNECT =================

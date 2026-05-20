@@ -118,6 +118,32 @@ exports.logout = (req, res) => {
   res.status(200).json({ message: "Logged out successfully" });
 };
 
+// Reset password redirect (HTTP → deep link)
+exports.resetPasswordRedirect = (req, res) => {
+  const { userId, token } = req.query;
+  console.log("🔗 resetPasswordRedirect pozvan:", { userId, token: token?.substring(0, 20) + "..." });
+
+  const deepLink = `vibra-date://reset-password?userId=${userId}&token=${token}`;
+  console.log("🔗 deepLink:", deepLink.substring(0, 60) + "...");
+
+  res.send(`
+    <html>
+      <head>
+        <meta http-equiv="refresh" content="0;url=${deepLink}" />
+        <style>
+          body { font-family: Arial, sans-serif; text-align: center; padding: 40px; background: #FCFCFD; }
+          a { color: #FF6A00; font-weight: bold; }
+        </style>
+      </head>
+      <body>
+        <script>window.location.href = "${deepLink}";</script>
+        <p>Otvara VibrA aplikaciju...</p>
+        <p>Ako se aplikacija ne otvori automatski, <a href="${deepLink}">klikni ovde</a>.</p>
+      </body>
+    </html>
+  `);
+};
+
 // Forgot password
 exports.forgotPassword = async (req, res) => {
   const { email } = req.body;
@@ -130,18 +156,27 @@ exports.forgotPassword = async (req, res) => {
 
     const token = jwt.sign({ id: user._id }, process.env.JWT_SECRET, { expiresIn: "15m" });
 
-    // Deep link za mobilnu aplikaciju:
-   const resetLink = `https://vibra.com/reset-password?userId=${user._id}&token=${token}`;
-
-    // Web fallback link ako želiš:
-    // const webResetLink = `https://vibra.com/reset-password?userId=${user._id}&token=${token}`;
+    // ✅ Direktan deep link umesto HTTP redirecta
+    const resetLink = `http://192.168.1.6:5000/api/auth/reset-password-redirect?userId=${user._id}&token=${token}`;
 
     const subject = "VibrA - Reset lozinke";
     const html = `
-      <p>Zdravo ${user.fullName},</p>
-      <p>Klikni na sledeći link da resetuješ lozinku:</p>
-      <a href="${resetLink}" target="_blank">${resetLink}</a>
-      <p>Ako nisi tražio reset lozinke, slobodno ignoriši ovaj email.</p>
+      <div style="font-family:Arial,sans-serif;max-width:480px;margin:0 auto;padding:24px;">
+        <h2 style="color:#FF6A00;">VibrA - Reset lozinke</h2>
+        <p>Zdravo ${user.fullName},</p>
+        <p>Primili smo zahtev za reset lozinke. Klikni na dugme ispod:</p>
+        <a href="${resetLink}" 
+           style="display:inline-block;margin:16px 0;padding:14px 28px;background:#FF6A00;color:#ffffff;text-decoration:none;border-radius:10px;font-weight:bold;font-size:15px;">
+          Resetuj lozinku
+        </a>
+        <p style="color:#8E8E93;font-size:13px;">
+          Ako dugme ne radi, kopiraj ovaj link i otvori ga na telefonu:
+        </p>
+        <p style="word-break:break-all;color:#FF6A00;font-size:13px;">${resetLink}</p>
+        <p style="color:#8E8E93;font-size:12px;margin-top:24px;">
+          Ako nisi tražio reset lozinke, slobodno ignoriši ovaj email. Link ističe za 15 minuta.
+        </p>
+      </div>
     `;
 
     await sendEmail({ to: email, subject, html });

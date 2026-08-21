@@ -496,6 +496,7 @@ exports.swipeAction = async (req, res) => {
     if (action === "dislike") {
       console.log("👎 DISLIKE");
       user.dislikes.addToSet(targetUser._id);
+      user.likes.pull(targetUser._id);
       await user.save();
 
       return res.json({

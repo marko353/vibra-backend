@@ -15,6 +15,19 @@ async function handleInvalidToken(token) {
   }
 }
 
+// ================= PROVERA NOTIFICATION SETTINGS =================
+// type: 'matches' | 'messages' (mapira se na user.notifications.<type>)
+function isNotificationEnabled(user, type) {
+  if (!user || !user.notifications) {
+    console.log(`[FCM] Notifications podešavanja ne postoje za korisnika ${user?._id}, default: uključeno`);
+    return true; // ako korisnik nema podešeno ništa, default je uključeno
+  }
+
+  const enabled = user.notifications[type] !== false;
+  console.log(`[FCM] isNotificationEnabled - userId: ${user._id}, type: ${type}, enabled: ${enabled}`);
+  return enabled;
+}
+
 const sendPushNotification = async (fcmToken, title, body, data = {}) => {
   try {
     const stringifiedData = Object.fromEntries(
@@ -49,6 +62,12 @@ async function sendMatchNotification(userToNotify, matchUser, conversationId) {
       return;
     }
 
+    // ✅ Provera notification settings za tip 'matches'
+    if (!isNotificationEnabled(userToNotify, 'matches')) {
+      console.log(`[FCM] sendMatchNotification: korisnik ${userToNotify._id} je isključio match notifikacije, preskačem slanje.`);
+      return;
+    }
+
     await sendPushNotification(
       userToNotify.fcmToken,
       "New Match! 💘",
@@ -71,6 +90,12 @@ async function sendMessageNotification(userToNotify, sender, messageContent, con
   try {
     if (!userToNotify?.fcmToken || !messageContent) {
       console.error("[FCM] sendMessageNotification: missing required params");
+      return;
+    }
+
+    // ✅ Provera notification settings za tip 'messages'
+    if (!isNotificationEnabled(userToNotify, 'messages')) {
+      console.log(`[FCM] sendMessageNotification: korisnik ${userToNotify._id} je isključio message notifikacije, preskačem slanje.`);
       return;
     }
 

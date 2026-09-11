@@ -4,6 +4,7 @@ const bcrypt = require("bcryptjs");
 const Conversation = require("../models/Conversation");
 const Message = require("../models/Message");
 const Match = require('../models/Match');
+const Report = require("../models/Report");
 const { sendMatchNotification, sendMessageNotification } = require('../notificationService');
 const mongoose = require('mongoose'); // Ensure mongoose is imported
 
@@ -11,72 +12,72 @@ const isMongoConnected = () => mongoose.connection.readyState === 1;
 
 // ================= HELPER FUNKCIJE =================
 function tryParseJSON(value) {
-  if (typeof value !== "string") return value;
-  try {
-    const parsed = JSON.parse(value);
-    return parsed;
-  } catch (e) {
-    return value;
-  }
+  if (typeof value !== "string") return value;
+  try {
+    const parsed = JSON.parse(value);
+    return parsed;
+  } catch (e) {
+    return value;
+  }
 }
 
 function parseArrayLike(value) {
-  if (Array.isArray(value)) return value;
-  if (typeof value === "string") {
-    const parsed = tryParseJSON(value);
-    if (Array.isArray(parsed)) return parsed;
-    return value.split(",").map(s => s.trim()).filter(Boolean);
-  }
-  return [value];
+  if (Array.isArray(value)) return value;
+  if (typeof value === "string") {
+    const parsed = tryParseJSON(value);
+    if (Array.isArray(parsed)) return parsed;
+    return value.split(",").map(s => s.trim()).filter(Boolean);
+  }
+  return [value];
 }
 
 // ================= LOGIN =================
 exports.login = async (req, res) => {
-  try {
-    const { email, password } = req.body;
-    const user = await User.findOne({ email }).select("+password");
-    if (!user) return res.status(404).json({ message: "User not found" });
+  try {
+    const { email, password } = req.body;
+    const user = await User.findOne({ email }).select("+password");
+    if (!user) return res.status(404).json({ message: "User not found" });
 
-    const isMatch = await bcrypt.compare(password, user.password);
-    if (!isMatch) return res.status(400).json({ message: "Incorrect password" });
+    const isMatch = await bcrypt.compare(password, user.password);
+    if (!isMatch) return res.status(400).json({ message: "Incorrect password" });
 
-    const token = jwt.sign({ id: user._id }, process.env.JWT_SECRET, { expiresIn: "20d" });
-    const safeUser = user.toObject();
-    delete safeUser.password;
+    const token = jwt.sign({ id: user._id }, process.env.JWT_SECRET, { expiresIn: "20d" });
+    const safeUser = user.toObject();
+    delete safeUser.password;
 
-    res.status(200).json({ token, user: safeUser });
-  } catch (error) {
-    console.error("[Controller] LOGIN - Error:", error);
-    res.status(500).json({ message: "Server error" });
-  }
+    res.status(200).json({ token, user: safeUser });
+  } catch (error) {
+    console.error("[Controller] LOGIN - Error:", error);
+    res.status(500).json({ message: "Server error" });
+  }
 };
 
 // ================= GET ALL USERS =================
 exports.getAllUsers = async (req, res) => {
-  try {
-    const filter = {};
-    console.log('[GET ALL USERS] Query params:', req.query);
-    // Filter za pol
-    if (req.query.gender === 'male' || req.query.gender === 'female') {
-      filter.gender = req.query.gender;
-    }
-    console.log('[GET ALL USERS] Filter after gender:', filter);
-    // Filter za godine (ako želiš, možeš dodati kao i u potentialMatches)
-    // Filter za udaljenost će biti primenjen u JS-u ispod
+  try {
+    const filter = {};
+    console.log('[GET ALL USERS] Query params:', req.query);
+    // Filter za pol
+    if (req.query.gender === 'male' || req.query.gender === 'female') {
+      filter.gender = req.query.gender;
+    }
+    console.log('[GET ALL USERS] Filter after gender:', filter);
+    // Filter za godine (ako želiš, možeš dodati kao i u potentialMatches)
+    // Filter za udaljenost će biti primenjen u JS-u ispod
 
-    // Geo filter za udaljenost
-    if (req.query.maxDistance && req.query.latitude && req.query.longitude) {
-      const maxDistance = Number(req.query.maxDistance) * 1000 || 200000; // u metrima
-      const lat = Number(req.query.latitude);
-      const lon = Number(req.query.longitude);
-      filter.location = {
-        $near: {
-          $geometry: { type: "Point", coordinates: [lon, lat] },
-          $maxDistance: maxDistance
-        }
-      };
-      console.log('[GET ALL USERS] Geo filter:', JSON.stringify(filter.location, null, 2));
-    }
+    // Geo filter za udaljenost
+    if (req.query.maxDistance && req.query.latitude && req.query.longitude) {
+      const maxDistance = Number(req.query.maxDistance) * 1000 || 200000; // u metrima
+      const lat = Number(req.query.latitude);
+      const lon = Number(req.query.longitude);
+      filter.location = {
+        $near: {
+          $geometry: { type: "Point", coordinates: [lon, lat] },
+          $maxDistance: maxDistance
+        }
+      };
+      console.log('[GET ALL USERS] Geo filter:', JSON.stringify(filter.location, null, 2));
+    }
 
     let users = await User.find(filter, "fullName profilePictures birthDate avatar location locationCity height relationshipType education jobTitle horoscope workout interests pets drinks smokes gender").lean();
     console.log('[GET ALL USERS] Users before locationCity merge:', JSON.stringify(users, null, 2));
@@ -89,10 +90,10 @@ exports.getAllUsers = async (req, res) => {
     console.log('[GET ALL USERS] Users after locationCity merge:', JSON.stringify(users, null, 2));
     console.log('[GET ALL USERS] Users found:', users.length);
     res.status(200).json({ users });
-  } catch (error) {
-    console.error("[Controller] GET ALL USERS - Error:", error);
-    res.status(500).json({ message: "Server error" });
-  }
+  } catch (error) {
+    console.error("[Controller] GET ALL USERS - Error:", error);
+    res.status(500).json({ message: "Server error" });
+  }
 };
 
 // ================= GET PROFILE =================
@@ -120,14 +121,14 @@ exports.getProfile = async (req, res) => {
 
 // ================= GET PROFILE BY ID =================
 exports.getProfileById = async (req, res) => {
-  try {
-    const user = await User.findById(req.params.userId).select('-password').lean();
-    if (!user) return res.status(404).json({ message: "User not found" });
-    res.status(200).json(user);
-  } catch (error) {
-    console.error("[Controller] GET PROFILE BY ID - Error:", error);
-    res.status(500).json({ message: "Server error" });
-  }
+  try {
+    const user = await User.findById(req.params.userId).select('-password').lean();
+    if (!user) return res.status(404).json({ message: "User not found" });
+    res.status(200).json(user);
+  } catch (error) {
+    console.error("[Controller] GET PROFILE BY ID - Error:", error);
+    res.status(500).json({ message: "Server error" });
+  }
 };
 
 // ================= UPDATE PROFILE =================
@@ -136,9 +137,12 @@ exports.updateProfile = async (req, res) => {
     const userId = req.user.id;
     let updateData = req.body;
 
+    console.log('[UPDATE PROFILE] userId:', userId);
+    console.log('[UPDATE PROFILE] req.body:', JSON.stringify(updateData, null, 2));
 
     if (updateData.field && updateData.value !== undefined) {
       updateData = { [updateData.field]: updateData.value };
+      console.log('[UPDATE PROFILE] field/value pattern detektovan, updateData:', JSON.stringify(updateData, null, 2));
     }
 
     // Validacija za polje gender
@@ -167,6 +171,7 @@ exports.updateProfile = async (req, res) => {
       'height',
       'languages',
       'interests',
+      'notifications', 
     ];
 
     // ✅ OBAVEZNO OVDE
@@ -190,7 +195,10 @@ exports.updateProfile = async (req, res) => {
       finalUpdatePayload.locationCity = 'Beograd';
     }
 
+    console.log('[UPDATE PROFILE] finalUpdatePayload:', JSON.stringify(finalUpdatePayload, null, 2));
+
     if (Object.keys(finalUpdatePayload).length === 0) {
+      console.log('[UPDATE PROFILE] Nema validnih polja za update, vraćam trenutnog korisnika bez izmena.');
       const user = await User.findById(userId)
         .select('-password')
         .lean();
@@ -206,7 +214,13 @@ exports.updateProfile = async (req, res) => {
       .lean();
 
     if (!updatedUser) {
+      console.warn(`[UPDATE PROFILE] Korisnik nije pronađen: ${userId}`);
       return res.status(404).json({ message: 'User not found.' });
+    }
+
+    console.log('[UPDATE PROFILE] Uspešno ažuriran korisnik:', updatedUser._id);
+    if (finalUpdatePayload.notifications) {
+      console.log('[UPDATE PROFILE] Nova notifications podešavanja:', JSON.stringify(updatedUser.notifications, null, 2));
     }
 
     return res.status(200).json(updatedUser);
@@ -217,24 +231,22 @@ exports.updateProfile = async (req, res) => {
       .json({ message: 'Server error', error: error.message });
   }
 };
-
-
 // ================= DELETE PROFILE PICTURE =================
 exports.deleteProfilePicture = async (req, res) => {
-  try {
-    const { imageUrl } = req.body;
-    const user = await User.findById(req.user.id);
-    if (!user) return res.status(404).json({ message: "User not found" });
+  try {
+    const { imageUrl } = req.body;
+    const user = await User.findById(req.user.id);
+    if (!user) return res.status(404).json({ message: "User not found" });
 
-    user.profilePictures = (user.profilePictures || []).filter(pic => pic !== imageUrl);
-    user.avatar = (user.profilePictures.length > 0) ? user.profilePictures[0] : null;
-    await user.save();
+    user.profilePictures = (user.profilePictures || []).filter(pic => pic !== imageUrl);
+    user.avatar = (user.profilePictures.length > 0) ? user.profilePictures[0] : null;
+    await user.save();
 
-    res.status(200).json({ message: "Image deleted" });
-  } catch (error) {
-    console.error("[Controller] DELETE PROFILE PICTURE - Error:", error);
-    res.status(500).json({ message: "Server error" });
-  }
+    res.status(200).json({ message: "Image deleted" });
+  } catch (error) {
+    console.error("[Controller] DELETE PROFILE PICTURE - Error:", error);
+    res.status(500).json({ message: "Server error" });
+  }
 };
 exports.reorderProfilePictures = async (req, res) => {
   try {
@@ -295,9 +307,24 @@ exports.getPotentialMatches = async (req, res) => {
     const minBirthDate = new Date(today.getFullYear() - max, today.getMonth(), today.getDate());
     const maxBirthDate = new Date(today.getFullYear() - min, today.getMonth(), today.getDate());
 
+    // Korisnici koje SAM ja blokirao
+    const blockedByMe = (user.blockedUsers || []).map((id) => id.toString());
+
+    // Korisnici koji su MENE blokirali
+    const usersWhoBlockedMe = await User.find({ blockedUsers: user._id })
+      .select("_id")
+      .lean();
+    const blockedMe = usersWhoBlockedMe.map((u) => u._id.toString());
 
     let filter = {
-      _id: { $nin: [user._id, ...(user.matches || [])] },
+      _id: {
+        $nin: [
+          user._id,
+          ...(user.matches || []),
+          ...blockedByMe,
+          ...blockedMe,
+        ],
+      },
       birthDate: { $gte: minBirthDate, $lte: maxBirthDate },
     };
     if (gender === 'male' || gender === 'female') {
@@ -515,29 +542,26 @@ exports.swipeAction = async (req, res) => {
 // ================= GET MATCHES & CONVERSATIONS =================
 exports.getMatchesAndConversations = async (req, res) => {
   try {
-    const currentUser = await User.findById(req.user.id);
+    const currentUser = await User.findById(req.user.id).lean();
     if (!currentUser) {
       console.error("[GET MATCHES & CONVERSATIONS] User not found:", req.user.id);
       return res.status(404).json({ message: "Korisnik nije pronađen" });
     }
 
-    console.log("[GET MATCHES & CONVERSATIONS] Current user:", currentUser);
+    // Lista ID-jeva korisnika koje sam JA blokirao
+    const blockedByMe = (currentUser.blockedUsers || []).map((id) => id.toString());
 
     // 1. Učitaj sve konverzacije gde učestvuje currentUser
     const conversations = await Conversation.find({ "participants.user": currentUser._id })
-      .populate({ path: 'participants.user', select: 'fullName avatar' })
+      .populate({ path: 'participants.user', select: 'fullName avatar blockedUsers' })
       .lean();
 
-    console.log("[GET MATCHES & CONVERSATIONS] Conversations found:", conversations.length);
-
-    // 2. Za SVAKU konverzaciju dohvatamo POSLEDNJU poruku direktno iz Message kolekcije
+    // 2. Za SVAKU konverzaciju dohvatamo POSLEDNJU poruku
     const conversationsWithLastMessage = await Promise.all(
       conversations.map(async (conv) => {
         const lastMessage = await Message.findOne({ conversationId: conv._id })
           .sort({ createdAt: -1 })
           .lean();
-
-        console.log("[GET MATCHES & CONVERSATIONS] Last message for conversation:", conv._id, lastMessage);
 
         return {
           ...conv,
@@ -555,26 +579,36 @@ exports.getMatchesAndConversations = async (req, res) => {
       );
 
       if (!otherParticipant || !otherParticipant.user) {
-        console.warn(`[GET MATCHES & CONVERSATIONS] Conversation ${conv._id} has no valid other participant.`);
+        continue;
+      }
+
+      const otherUser = otherParticipant.user;
+      const otherUserIdStr = otherUser._id.toString();
+
+      // 🔍 FILTER ZA BLOKIRANE:
+      // Proveri da li sam ja blokirao njih ILI su oni blokirali mene
+      const isBlockedByMe = blockedByMe.includes(otherUserIdStr);
+      const isMeBlockedByOther = (otherUser.blockedUsers || [])
+        .map((id) => id.toString())
+        .includes(currentUser._id.toString());
+
+      if (isBlockedByMe || isMeBlockedByOther) {
+        // Preskoči ovu konverzaciju ako postoji blokada
         continue;
       }
 
       const chatUser = {
-        _id: otherParticipant.user._id,
-        fullName: otherParticipant.user.fullName,
-        avatar: otherParticipant.user.avatar,
+        _id: otherUser._id,
+        fullName: otherUser.fullName,
+        avatar: otherUser.avatar,
       };
 
       const userStatus = conv.participants.find(
         (p) => p.user && p.user._id.equals(currentUser._id)
       );
 
-      if (!userStatus) {
-        console.warn(`[GET MATCHES & CONVERSATIONS] Status for user ${currentUser._id} not found in conversation ${conv._id}.`);
-        continue;
-      }
+      if (!userStatus) continue;
 
-      // ✅ Ako postoji BILO KAKVA poruka za ovu konverzaciju → IDE U PORUKE
       const lastMsg = conv._lastMessage;
       const hasMessages = !!lastMsg;
 
@@ -586,11 +620,9 @@ exports.getMatchesAndConversations = async (req, res) => {
             text: lastMsg.text || '...',
             timestamp: lastMsg.createdAt,
           },
-          // Badge samo ako ovaj user ima nepročitane poruke
           has_unread: !!userStatus.has_unread_messages,
         });
       } else {
-        // ⬅️ Nema poruka → novi spoj (prikaz na vrhu)
         newMatches.push({
           ...chatUser,
           chatId: conv._id.toString(),
@@ -599,15 +631,12 @@ exports.getMatchesAndConversations = async (req, res) => {
       }
     }
 
-    // 3. Sortiraj konverzacije po vremenu poslednje poruke (najnovije prvo)
+    // 3. Sortiraj konverzacije po vremenu poslednje poruke
     existingConversations.sort((a, b) => {
       const timeA = a.lastMessage?.timestamp ? new Date(a.lastMessage.timestamp).getTime() : 0;
       const timeB = b.lastMessage?.timestamp ? new Date(b.lastMessage.timestamp).getTime() : 0;
       return timeB - timeA;
     });
-
-    console.log("[GET MATCHES & CONVERSATIONS] Final new matches:", newMatches);
-    console.log("[GET MATCHES & CONVERSATIONS] Final conversations:", existingConversations);
 
     res.status(200).json({ newMatches, conversations: existingConversations });
   } catch (error) {
@@ -617,159 +646,158 @@ exports.getMatchesAndConversations = async (req, res) => {
 };
 
 
-
 // ================= GET MESSAGES =================
 exports.getMessages = async (req, res) => {
-  try {
-    const { chatId } = req.params;
-    const userId = req.user.id;
+  try {
+    const { chatId } = req.params;
+    const userId = req.user.id;
 
-    const conversationExists = await Conversation.exists({ _id: chatId, "participants.user": userId });
-    if (!conversationExists) return res.status(200).json([]);
+    const conversationExists = await Conversation.exists({ _id: chatId, "participants.user": userId });
+    if (!conversationExists) return res.status(200).json([]);
 
-    const messages = await Message.find({ conversationId: chatId }).sort({ createdAt: -1 });
-    res.status(200).json(messages);
-  } catch (error) {
-    console.error("[Controller] GET MESSAGES - Error:", error);
-    res.status(500).json({ message: "Greška na serveru prilikom dohvatanja poruka." });
-  }
+    const messages = await Message.find({ conversationId: chatId }).sort({ createdAt: -1 });
+    res.status(200).json(messages);
+  } catch (error) {
+    console.error("[Controller] GET MESSAGES - Error:", error);
+    res.status(500).json({ message: "Greška na serveru prilikom dohvatanja poruka." });
+  }
 };
 
 // ================= POST MESSAGE (Podržava slanje po chatId ili recipientId) =================
 exports.postMessage = async (req, res) => {
-  try {
-    const { text, recipientId } = req.body; 
-    const { chatId: chatIdParam } = req.params; 
-    const senderId = req.user.id;
+  try {
+    const { text, recipientId } = req.body; 
+    const { chatId: chatIdParam } = req.params; 
+    const senderId = req.user.id;
 
-    let conversation = null;
-    let targetRecipientId = recipientId; 
+    let conversation = null;
+    let targetRecipientId = recipientId; 
 
-    // 1. Scenarij: Poruka u postojećem chatu (koristi chatId iz rute)
-    if (chatIdParam) {
-      conversation = await Conversation.findById(chatIdParam);
-      if (!conversation) return res.status(404).json({ message: "Konverzacija nije pronađena." });
-      
-      // Pronađi ID primaoca iz konverzacije
-      const receiverParticipant = conversation.participants.find(p => p.user && !p.user.equals(senderId));
-      if (!receiverParticipant || !receiverParticipant.user) return res.status(400).json({ message: "Primalac nije pronađen u konverzaciji." });
-      targetRecipientId = receiverParticipant.user.toString();
-    } 
-    // 2. Scenarij: Prva poruka nakon match-a (koristi recipientId iz tela)
-    else if (recipientId) {
-      // Proveri da li konverzacija već postoji
-      conversation = await Conversation.findOne({ "participants.user": { $all: [senderId, recipientId] } });
-       
-      if (!conversation) {
-        // Kreiraj novu konverzaciju ako ne postoji
-        conversation = new Conversation({
-          participants: [
-            { user: senderId, is_new: false, has_unread_messages: false, has_sent_message: true },
-            { user: recipientId, is_new: true, has_unread_messages: true, has_sent_message: false } 
-          ],
-        });
-        await conversation.save();
-      } else {
-        // Ako konverzacija postoji, ažuriraj statuse za ovu poruku
-        conversation.participants = conversation.participants.map(p => {
-            if (p.user.equals(senderId)) return { ...p.toObject(), is_new: false, has_sent_message: true, has_unread_messages: false };
-            if (p.user.equals(recipientId)) return { ...p.toObject(), has_unread_messages: true };
-            return p.toObject();
-        });
-      }
-    } 
-    // 3. Scenarij: Nedostaju ključni podaci
-    else {
-      return res.status(400).json({ message: "Nedostaju chatId ili recipientId za slanje poruke." });
-    }
+    // 1. Scenarij: Poruka u postojećem chatu (koristi chatId iz rute)
+    if (chatIdParam) {
+      conversation = await Conversation.findById(chatIdParam);
+      if (!conversation) return res.status(404).json({ message: "Konverzacija nije pronađena." });
+      
+      // Pronađi ID primaoca iz konverzacije
+      const receiverParticipant = conversation.participants.find(p => p.user && !p.user.equals(senderId));
+      if (!receiverParticipant || !receiverParticipant.user) return res.status(400).json({ message: "Primalac nije pronađen u konverzaciji." });
+      targetRecipientId = receiverParticipant.user.toString();
+    } 
+    // 2. Scenarij: Prva poruka nakon match-a (koristi recipientId iz tela)
+    else if (recipientId) {
+      // Proveri da li konverzacija već postoji
+      conversation = await Conversation.findOne({ "participants.user": { $all: [senderId, recipientId] } });
+       
+      if (!conversation) {
+        // Kreiraj novu konverzaciju ako ne postoji
+        conversation = new Conversation({
+          participants: [
+            { user: senderId, is_new: false, has_unread_messages: false, has_sent_message: true },
+            { user: recipientId, is_new: true, has_unread_messages: true, has_sent_message: false } 
+          ],
+        });
+        await conversation.save();
+      } else {
+        // Ako konverzacija postoji, ažuriraj statuse za ovu poruku
+        conversation.participants = conversation.participants.map(p => {
+            if (p.user.equals(senderId)) return { ...p.toObject(), is_new: false, has_sent_message: true, has_unread_messages: false };
+            if (p.user.equals(recipientId)) return { ...p.toObject(), has_unread_messages: true };
+            return p.toObject();
+        });
+      }
+    } 
+    // 3. Scenarij: Nedostaju ključni podaci
+    else {
+      return res.status(400).json({ message: "Nedostaju chatId ili recipientId za slanje poruke." });
+    }
 
 
-    // Provere nakon pronalaska/kreiranja konverzacije
-    if (!conversation || !targetRecipientId) {
-      return res.status(500).json({ message: "Greška u obradi konverzacije." });
-    }
+    // Provere nakon pronalaska/kreiranja konverzacije
+    if (!conversation || !targetRecipientId) {
+      return res.status(500).json({ message: "Greška u obradi konverzacije." });
+    }
 
-    // Kreiranje i čuvanje poruke
-    const newMessage = new Message({
-        conversationId: conversation._id, 
-        sender: senderId, 
-        receiver: targetRecipientId, 
-        text
-    });
-    await newMessage.save();
+    // Kreiranje i čuvanje poruke
+    const newMessage = new Message({
+        conversationId: conversation._id, 
+        sender: senderId, 
+        receiver: targetRecipientId, 
+        text
+    });
+    await newMessage.save();
 
-    conversation.messages.push(newMessage._id);
+    conversation.messages.push(newMessage._id);
 
-    // Ažuriranje statusa učesnika za oba scenarija
-    conversation.participants = conversation.participants.map(p => {
-        const participantObject = p.toObject ? p.toObject() : { ...p };
-        
-        if (p.user.equals(targetRecipientId)) { // Primaocu
-            participantObject.has_unread_messages = true;
-        }
-        else if (p.user.equals(senderId)) { // Pošiljaocu
-            participantObject.has_unread_messages = false; 
-            participantObject.is_new = false;
-            participantObject.has_sent_message = true;
-        }
-        return participantObject;
-    });
+    // Ažuriranje statusa učesnika za oba scenarija
+    conversation.participants = conversation.participants.map(p => {
+        const participantObject = p.toObject ? p.toObject() : { ...p };
+        
+        if (p.user.equals(targetRecipientId)) { // Primaocu
+            participantObject.has_unread_messages = true;
+        }
+        else if (p.user.equals(senderId)) { // Pošiljaocu
+            participantObject.has_unread_messages = false; 
+            participantObject.is_new = false;
+            participantObject.has_sent_message = true;
+        }
+        return participantObject;
+    });
 
-    conversation.markModified('participants');
-    await conversation.save();
+    conversation.markModified('participants');
+    await conversation.save();
 
-    // ================= PUSH NOTIFICATION =================
-    try {
-      const senderUser = await User.findById(senderId);
-      const receiver = await User.findById(targetRecipientId);
-      const sender = await User.findById(senderId);
+    // ================= PUSH NOTIFICATION =================
+    try {
+      const senderUser = await User.findById(senderId);
+      const receiver = await User.findById(targetRecipientId);
+      const sender = await User.findById(senderId);
 
-      if (receiver?.fcmToken) {
-        await sendMessageNotification(
-          receiver,
-          sender,
-          text,
-          conversation._id
-      );
+      if (receiver?.fcmToken) {
+        await sendMessageNotification(
+          receiver,
+          sender,
+          text,
+          conversation._id
+      );
 
-        console.log("✅ Message notification poslata");
-      }
-    } catch (notificationError) {
-      console.error(
-        "❌ Greška pri slanju message notifikacije:",
-        notificationError
-      );
-  }
+        console.log("✅ Message notification poslata");
+      }
+    } catch (notificationError) {
+      console.error(
+        "❌ Greška pri slanju message notifikacije:",
+        notificationError
+      );
+  }
 
-  res.status(201).json({
-    ...newMessage.toObject(),
-    conversationId: conversation._id.toString()
-  });
-  } catch (error) {
-    console.error("[Controller] POST MESSAGE - Error:", error);
-    res.status(500).json({ message: "Greška prilikom slanja poruke" });
-  }
+  res.status(201).json({
+    ...newMessage.toObject(),
+    conversationId: conversation._id.toString()
+  });
+  } catch (error) {
+    console.error("[Controller] POST MESSAGE - Error:", error);
+    res.status(500).json({ message: "Greška prilikom slanja poruke" });
+  }
 };
 
 // ================= MARK AS READ =================
 exports.markAsRead = async (req, res) => {
-  try {
-    const { chatId } = req.params;
-    const userId = req.user.id;
+  try {
+    const { chatId } = req.params;
+    const userId = req.user.id;
 
-    const updatedConversation = await Conversation.findOneAndUpdate(
-      { _id: chatId, "participants.user": userId },
-      { $set: { "participants.$.is_new": false, "participants.$.has_unread_messages": false } },
-      { new: true }
-    );
+    const updatedConversation = await Conversation.findOneAndUpdate(
+      { _id: chatId, "participants.user": userId },
+      { $set: { "participants.$.is_new": false, "participants.$.has_unread_messages": false } },
+      { new: true }
+    );
 
-    if (!updatedConversation) return res.status(404).json({ message: "Konverzacija nije pronađena." });
+    if (!updatedConversation) return res.status(404).json({ message: "Konverzacija nije pronađena." });
 
-    res.status(200).json({ success: true, message: "Obeleženo kao pročitano." });
-  } catch (error) {
-    console.error("[Controller] MARK AS READ - Error:", error);
-    res.status(500).json({ message: "Greška servera." });
-  }
+    res.status(200).json({ success: true, message: "Obeleženo kao pročitano." });
+  } catch (error) {
+    console.error("[Controller] MARK AS READ - Error:", error);
+    res.status(500).json({ message: "Greška servera." });
+  }
 };
 
 // ================= GET INCOMING LIKES =================
@@ -1020,5 +1048,121 @@ exports.createMatchAndNotify = async (userId1, userId2) => {
   } catch (error) {
     console.error('[Controller] Fatalna greška u createMatchAndNotify:', error);
     throw error;
+  }
+};
+
+// ================= BLOCK USER =================
+exports.blockUser = async (req, res) => {
+  const currentUserId = req.user.id;
+  const { userId: targetUserId } = req.params;
+
+  try {
+    if (currentUserId === targetUserId) {
+      return res.status(400).json({ message: "Ne možete blokirati sami sebe." });
+    }
+
+    // 1. Dodaj targetUserId u niz blockedUsers ulogovanog korisnika
+    await User.findByIdAndUpdate(currentUserId, {
+      $addToSet: { blockedUsers: targetUserId }
+    });
+
+    // 2. Pronađi i obriši postojati Conversation i Message ako postoje
+    const conversation = await Conversation.findOne({
+      "participants.user": { $all: [currentUserId, targetUserId] }
+    });
+
+    if (conversation) {
+      await Message.deleteMany({ conversationId: conversation._id });
+      await Conversation.findByIdAndDelete(conversation._id);
+    }
+
+    // 3. Ukloni iz niza matches kod oba korisnika
+    await User.updateOne(
+      { _id: currentUserId },
+      { $pull: { matches: targetUserId } }
+    );
+    await User.updateOne(
+      { _id: targetUserId },
+      { $pull: { matches: currentUserId } }
+    );
+
+    // 4. Obavesti drugog korisnika preko Socket.io ako je online
+    const targetSockets = global.onlineUsers?.get(targetUserId.toString());
+    if (targetSockets && conversation) {
+      targetSockets.forEach((sid) => {
+        global.io.to(sid).emit('conversationRemoved', {
+          conversationId: conversation._id.toString(),
+        });
+      });
+    }
+
+    res.status(200).json({ success: true, message: "Korisnik je uspešno blokiran." });
+  } catch (error) {
+    console.error("[BLOCK USER] Error:", error);
+    res.status(500).json({ message: "Server error" });
+  }
+};
+
+// ================= UNBLOCK USER =================
+exports.unblockUser = async (req, res) => {
+  try {
+    const currentUserId = req.user.id;
+    const { userId: targetUserId } = req.params;
+
+    await User.updateOne(
+      { _id: currentUserId },
+      { $pull: { blockedUsers: targetUserId } }
+    );
+
+    res.status(200).json({ success: true, message: "Korisnik je odblokiran." });
+  } catch (error) {
+    console.error("[Controller] UNBLOCK USER - Error:", error);
+    res.status(500).json({ message: "Server error" });
+  }
+};
+
+// ================= GET BLOCKED USERS =================
+exports.getBlockedUsers = async (req, res) => {
+  try {
+    const user = await User.findById(req.user.id)
+      .populate("blockedUsers", "fullName profilePictures avatar")
+      .lean();
+
+    if (!user) return res.status(404).json({ message: "Korisnik nije pronađen." });
+
+    const blocked = (user.blockedUsers || []).map((u) => ({
+      _id: u._id,
+      fullName: u.fullName,
+      profilePictures: u.profilePictures,
+    }));
+
+    res.status(200).json(blocked);
+  } catch (error) {
+    console.error("[Controller] GET BLOCKED USERS - Error:", error);
+    res.status(500).json({ message: "Server error" });
+  }
+};
+
+// ================= REPORT USER =================
+exports.reportUser = async (req, res) => {
+  try {
+    const reporterId = req.user.id;
+    const { userId: reportedUserId } = req.params;
+    const { reason } = req.body;
+
+    if (reporterId === reportedUserId) {
+      return res.status(400).json({ message: "Ne možeš prijaviti sam sebe." });
+    }
+
+    await Report.create({
+      reporter: reporterId,
+      reportedUser: reportedUserId,
+      reason: reason || null,
+    });
+
+    res.status(200).json({ success: true, message: "Prijava je poslata." });
+  } catch (error) {
+    console.error("[Controller] REPORT USER - Error:", error);
+    res.status(500).json({ message: "Server error" });
   }
 };

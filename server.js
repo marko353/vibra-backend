@@ -190,7 +190,7 @@ io.on("connection", (socket) => {
       (async () => {
         try {
           console.log("🔍 Dohvatam podatke za notifikaciju", { receiverId, userId });
-          const receiver = await User.findById(receiverId).select('fcmToken _id fullName');
+          const receiver = await User.findById(receiverId).select('fcmToken _id fullName notifications');
           const sender = await User.findById(userId).select('fullName avatar _id');
 
           console.log(`🔔 NOTIF: ${sender.fullName} → ${receiver?.fullName} | token: ${receiver?.fcmToken?.substring(0, 15)}`);

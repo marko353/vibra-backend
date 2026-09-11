@@ -22,7 +22,11 @@ const {
   markAsRead,
   saveUserFilters,
   getUserFilters,
-  createMatchAndNotify
+  createMatchAndNotify,
+  blockUser,
+  unblockUser,
+  getBlockedUsers,
+  reportUser
 } = require('../controllers/userController');
 
 const User = require("../models/User");
@@ -309,6 +313,20 @@ router.post('/match-notify', authMiddleware, async (req, res) => {
     });
   }
 });
+
+/* ===================== BLOCK / UNBLOCK / REPORT ===================== */
+/*
+  ⚠️ OVO MORA DA BUDE PRE:
+  router.get('/:userId', ...)
+
+  '/blocked' je jedan URL segment, isto kao '/:userId' - da je stavimo
+  POSLE dinamicke rute, Express bi mislio da je "blocked" zapravo
+  userId parametar i nikad ne bi stigla do getBlockedUsers funkcije.
+*/
+router.get('/blocked', authMiddleware, getBlockedUsers);
+router.post('/block/:userId', authMiddleware, blockUser);
+router.delete('/block/:userId', authMiddleware, unblockUser);
+router.post('/report/:userId', authMiddleware, reportUser);
 
 /* ===================== USERS & PROFILE ===================== */
 router.get('/all-users', authMiddleware, getAllUsers);

@@ -5,7 +5,7 @@ const Conversation = require("../models/Conversation");
 const Message = require("../models/Message");
 const Match = require('../models/Match');
 const Report = require("../models/Report");
-const { sendMatchNotification, sendMessageNotification } = require('../notificationService');
+const { sendMatchNotification, sendMessageNotification, sendLikeNotification } = require('../notificationService');
 const mongoose = require('mongoose'); // Ensure mongoose is imported
 
 const isMongoConnected = () => mongoose.connection.readyState === 1;
@@ -57,17 +57,13 @@ exports.getAllUsers = async (req, res) => {
   try {
     const filter = {};
     console.log('[GET ALL USERS] Query params:', req.query);
-    // Filter za pol
     if (req.query.gender === 'male' || req.query.gender === 'female') {
       filter.gender = req.query.gender;
     }
     console.log('[GET ALL USERS] Filter after gender:', filter);
-    // Filter za godine (ako želiš, možeš dodati kao i u potentialMatches)
-    // Filter za udaljenost će biti primenjen u JS-u ispod
 
-    // Geo filter za udaljenost
     if (req.query.maxDistance && req.query.latitude && req.query.longitude) {
-      const maxDistance = Number(req.query.maxDistance) * 1000 || 200000; // u metrima
+      const maxDistance = Number(req.query.maxDistance) * 1000 || 200000;
       const lat = Number(req.query.latitude);
       const lon = Number(req.query.longitude);
       filter.location = {
@@ -145,7 +141,6 @@ exports.updateProfile = async (req, res) => {
       console.log('[UPDATE PROFILE] field/value pattern detektovan, updateData:', JSON.stringify(updateData, null, 2));
     }
 
-    // Validacija za polje gender
     if (updateData.gender && !['male', 'female', 'other'].includes(updateData.gender)) {
       return res.status(400).json({ message: 'Pol može biti samo "male", "female" ili "other".' });
     }
@@ -171,10 +166,9 @@ exports.updateProfile = async (req, res) => {
       'height',
       'languages',
       'interests',
-      'notifications', 
+      'notifications',
     ];
 
-    // ✅ OBAVEZNO OVDE
     const finalUpdatePayload = {};
 
     Object.keys(updateData).forEach((key) => {
@@ -183,15 +177,11 @@ exports.updateProfile = async (req, res) => {
       }
     });
 
-    // Ako korisnik šalje novu lokaciju i novi grad, ažuriraj oba
     if (updateData.locationCity) {
       finalUpdatePayload.locationCity = updateData.locationCity;
     }
 
-    // Ako korisnik šalje novu lokaciju, ali nije poslao grad, možeš ovde automatski dodeliti grad na osnovu lokacije (ili ostaviti prazno)
-    // Primer: ako želiš default grad za svaku novu lokaciju
     if (updateData.location && !updateData.locationCity) {
-      // OVAJ DEO MOŽEŠ PRILAGODITI: koristi reverse geocoding API za pravi grad
       finalUpdatePayload.locationCity = 'Beograd';
     }
 
@@ -231,6 +221,7 @@ exports.updateProfile = async (req, res) => {
       .json({ message: 'Server error', error: error.message });
   }
 };
+
 // ================= DELETE PROFILE PICTURE =================
 exports.deleteProfilePicture = async (req, res) => {
   try {
@@ -248,6 +239,7 @@ exports.deleteProfilePicture = async (req, res) => {
     res.status(500).json({ message: "Server error" });
   }
 };
+
 exports.reorderProfilePictures = async (req, res) => {
   try {
     const { pictures } = req.body;
@@ -266,14 +258,11 @@ exports.reorderProfilePictures = async (req, res) => {
         .json({ message: 'Korisnik nije pronađen' });
     }
 
-    // sigurnosni filter (nikad null u bazi)
     const cleanPictures = pictures.filter(
       (p) => typeof p === 'string'
     );
 
     user.profilePictures = cleanPictures;
-
-    // avatar = prva slika
     user.avatar = cleanPictures[0] || null;
 
     await user.save();
@@ -290,7 +279,6 @@ exports.reorderProfilePictures = async (req, res) => {
   }
 };
 
-
 /// ================= GET POTENTIAL MATCHES =================
 exports.getPotentialMatches = async (req, res) => {
   try {
@@ -299,7 +287,6 @@ exports.getPotentialMatches = async (req, res) => {
       return res.status(404).json({ message: "User not found" });
     }
 
-    // Filter parametri iz query stringa
     const { minAge, maxAge, gender } = req.query;
     const min = Number(minAge) || 18;
     const max = Number(maxAge) || 99;
@@ -307,10 +294,8 @@ exports.getPotentialMatches = async (req, res) => {
     const minBirthDate = new Date(today.getFullYear() - max, today.getMonth(), today.getDate());
     const maxBirthDate = new Date(today.getFullYear() - min, today.getMonth(), today.getDate());
 
-    // Korisnici koje SAM ja blokirao
     const blockedByMe = (user.blockedUsers || []).map((id) => id.toString());
 
-    // Korisnici koji su MENE blokirali
     const usersWhoBlockedMe = await User.find({ blockedUsers: user._id })
       .select("_id")
       .lean();
@@ -331,9 +316,8 @@ exports.getPotentialMatches = async (req, res) => {
       filter.gender = gender;
     }
 
-    // Geo filter za udaljenost
     if (req.query.maxDistance && req.query.latitude && req.query.longitude) {
-      const maxDistance = Number(req.query.maxDistance) * 1000 || 200000; // u metrima
+      const maxDistance = Number(req.query.maxDistance) * 1000 || 200000;
       const lat = Number(req.query.latitude);
       const lon = Number(req.query.longitude);
       filter.location = {
@@ -398,7 +382,6 @@ exports.swipeAction = async (req, res) => {
   try {
     const { targetUserId, action } = req.body;
 
-    // 1. Fetch korisnika
     const user = await User.findById(req.user.id);
     const targetUser = await User.findById(targetUserId);
 
@@ -416,7 +399,6 @@ exports.swipeAction = async (req, res) => {
     if (action === "like") {
       console.log(`❤️ LIKE: ${user._id} lajkuje ${targetUser._id}`);
 
-      // Provera da li je targetUser već lajkovao mene (stoji u mom likes nizu)
       const isMutualLike = user.likes.some(
         (id) => id.toString() === targetUser._id.toString()
       );
@@ -427,15 +409,12 @@ exports.swipeAction = async (req, res) => {
       if (isMutualLike) {
         console.log("🔥 MATCH OCCURRED - Obostrani lajk detektovan");
 
-        // Upis match-a kod oba korisnika
         user.matches.addToSet(targetUser._id);
         targetUser.matches.addToSet(user._id);
 
-        // Očisti 'incoming like' iz niza (više nije samo like, sad je match)
         user.likes.pull(targetUser._id);
         targetUser.likes.pull(user._id);
 
-        // Kreiranje ili pronalaženje konverzacije
         let conversationId = null;
         try {
           let conversation = await Conversation.findOne({
@@ -453,11 +432,9 @@ exports.swipeAction = async (req, res) => {
           console.error("❌ conversation error:", e);
         }
 
-        // Čuvanje promena u bazi
         await user.save();
         await targetUser.save();
 
-        // 🔔 SOCKET: Obavesti drugu osobu odmah
         const targetSockets = global.onlineUsers.get(targetUser._id.toString());
         if (targetSockets) {
           targetSockets.forEach((sid) => {
@@ -470,28 +447,25 @@ exports.swipeAction = async (req, res) => {
           });
         }
 
-        // 🔔 PUSH NOTIFICATION
         if (targetUser.fcmToken) {
           console.log("📲 SENDING MATCH NOTIFICATION TO:", targetUser.fullName);
-          
-          // SLANJE KAO ČISTI PARAMETRI (Opcija A)
-          // Ovo rešava problem gde su matchUser i conversationId bili undefined
+
           await sendMatchNotification(
-            targetUser,      // Prvi parametar: userToNotify
-            user,            // Drugi parametar: matchUser (ti)
-            conversationId   // Treći parametar: ID konverzacije
+            targetUser,
+            user,
+            conversationId
           );
         }
 
-       return res.json({
-  match: true,
-  conversationId,
-  matchedUser: {
-    _id: targetUser._id,
-    fullName: targetUser.fullName,
-    avatar: targetUser.avatar,
-  },
-});
+        return res.json({
+          match: true,
+          conversationId,
+          matchedUser: {
+            _id: targetUser._id,
+            fullName: targetUser.fullName,
+            avatar: targetUser.avatar,
+          },
+        });
       }
 
       // ================= CASE B: SAMO LIKE =================
@@ -511,6 +485,12 @@ exports.swipeAction = async (req, res) => {
             birthDate: user.birthDate,
           });
         });
+      }
+
+      // 🔔 PUSH NOTIFICATION
+      if (targetUser.fcmToken) {
+        console.log("📲 SENDING LIKE NOTIFICATION TO:", targetUser.fullName);
+        await sendLikeNotification(targetUser, user);
       }
 
       return res.json({
@@ -539,6 +519,7 @@ exports.swipeAction = async (req, res) => {
     return res.status(500).json({ message: "Server error" });
   }
 };
+
 // ================= GET MATCHES & CONVERSATIONS =================
 exports.getMatchesAndConversations = async (req, res) => {
   try {
@@ -548,15 +529,12 @@ exports.getMatchesAndConversations = async (req, res) => {
       return res.status(404).json({ message: "Korisnik nije pronađen" });
     }
 
-    // Lista ID-jeva korisnika koje sam JA blokirao
     const blockedByMe = (currentUser.blockedUsers || []).map((id) => id.toString());
 
-    // 1. Učitaj sve konverzacije gde učestvuje currentUser
     const conversations = await Conversation.find({ "participants.user": currentUser._id })
       .populate({ path: 'participants.user', select: 'fullName avatar blockedUsers' })
       .lean();
 
-    // 2. Za SVAKU konverzaciju dohvatamo POSLEDNJU poruku
     const conversationsWithLastMessage = await Promise.all(
       conversations.map(async (conv) => {
         const lastMessage = await Message.findOne({ conversationId: conv._id })
@@ -585,15 +563,12 @@ exports.getMatchesAndConversations = async (req, res) => {
       const otherUser = otherParticipant.user;
       const otherUserIdStr = otherUser._id.toString();
 
-      // 🔍 FILTER ZA BLOKIRANE:
-      // Proveri da li sam ja blokirao njih ILI su oni blokirali mene
       const isBlockedByMe = blockedByMe.includes(otherUserIdStr);
       const isMeBlockedByOther = (otherUser.blockedUsers || [])
         .map((id) => id.toString())
         .includes(currentUser._id.toString());
 
       if (isBlockedByMe || isMeBlockedByOther) {
-        // Preskoči ovu konverzaciju ako postoji blokada
         continue;
       }
 
@@ -631,7 +606,6 @@ exports.getMatchesAndConversations = async (req, res) => {
       }
     }
 
-    // 3. Sortiraj konverzacije po vremenu poslednje poruke
     existingConversations.sort((a, b) => {
       const timeA = a.lastMessage?.timestamp ? new Date(a.lastMessage.timestamp).getTime() : 0;
       const timeB = b.lastMessage?.timestamp ? new Date(b.lastMessage.timestamp).getTime() : 0;
@@ -644,7 +618,6 @@ exports.getMatchesAndConversations = async (req, res) => {
     res.status(500).json({ message: "Greška servera" });
   }
 };
-
 
 // ================= GET MESSAGES =================
 exports.getMessages = async (req, res) => {
@@ -666,81 +639,70 @@ exports.getMessages = async (req, res) => {
 // ================= POST MESSAGE (Podržava slanje po chatId ili recipientId) =================
 exports.postMessage = async (req, res) => {
   try {
-    const { text, recipientId } = req.body; 
-    const { chatId: chatIdParam } = req.params; 
+    const { text, recipientId } = req.body;
+    const { chatId: chatIdParam } = req.params;
     const senderId = req.user.id;
 
     let conversation = null;
-    let targetRecipientId = recipientId; 
+    let targetRecipientId = recipientId;
 
-    // 1. Scenarij: Poruka u postojećem chatu (koristi chatId iz rute)
     if (chatIdParam) {
       conversation = await Conversation.findById(chatIdParam);
       if (!conversation) return res.status(404).json({ message: "Konverzacija nije pronađena." });
-      
-      // Pronađi ID primaoca iz konverzacije
+
       const receiverParticipant = conversation.participants.find(p => p.user && !p.user.equals(senderId));
       if (!receiverParticipant || !receiverParticipant.user) return res.status(400).json({ message: "Primalac nije pronađen u konverzaciji." });
       targetRecipientId = receiverParticipant.user.toString();
-    } 
-    // 2. Scenarij: Prva poruka nakon match-a (koristi recipientId iz tela)
+    }
     else if (recipientId) {
-      // Proveri da li konverzacija već postoji
       conversation = await Conversation.findOne({ "participants.user": { $all: [senderId, recipientId] } });
-       
+
       if (!conversation) {
-        // Kreiraj novu konverzaciju ako ne postoji
         conversation = new Conversation({
           participants: [
             { user: senderId, is_new: false, has_unread_messages: false, has_sent_message: true },
-            { user: recipientId, is_new: true, has_unread_messages: true, has_sent_message: false } 
+            { user: recipientId, is_new: true, has_unread_messages: true, has_sent_message: false }
           ],
         });
         await conversation.save();
       } else {
-        // Ako konverzacija postoji, ažuriraj statuse za ovu poruku
         conversation.participants = conversation.participants.map(p => {
-            if (p.user.equals(senderId)) return { ...p.toObject(), is_new: false, has_sent_message: true, has_unread_messages: false };
-            if (p.user.equals(recipientId)) return { ...p.toObject(), has_unread_messages: true };
-            return p.toObject();
+          if (p.user.equals(senderId)) return { ...p.toObject(), is_new: false, has_sent_message: true, has_unread_messages: false };
+          if (p.user.equals(recipientId)) return { ...p.toObject(), has_unread_messages: true };
+          return p.toObject();
         });
       }
-    } 
-    // 3. Scenarij: Nedostaju ključni podaci
+    }
     else {
       return res.status(400).json({ message: "Nedostaju chatId ili recipientId za slanje poruke." });
     }
 
-
-    // Provere nakon pronalaska/kreiranja konverzacije
     if (!conversation || !targetRecipientId) {
       return res.status(500).json({ message: "Greška u obradi konverzacije." });
     }
 
-    // Kreiranje i čuvanje poruke
     const newMessage = new Message({
-        conversationId: conversation._id, 
-        sender: senderId, 
-        receiver: targetRecipientId, 
-        text
+      conversationId: conversation._id,
+      sender: senderId,
+      receiver: targetRecipientId,
+      text
     });
     await newMessage.save();
 
     conversation.messages.push(newMessage._id);
 
-    // Ažuriranje statusa učesnika za oba scenarija
     conversation.participants = conversation.participants.map(p => {
-        const participantObject = p.toObject ? p.toObject() : { ...p };
-        
-        if (p.user.equals(targetRecipientId)) { // Primaocu
-            participantObject.has_unread_messages = true;
-        }
-        else if (p.user.equals(senderId)) { // Pošiljaocu
-            participantObject.has_unread_messages = false; 
-            participantObject.is_new = false;
-            participantObject.has_sent_message = true;
-        }
-        return participantObject;
+      const participantObject = p.toObject ? p.toObject() : { ...p };
+
+      if (p.user.equals(targetRecipientId)) {
+        participantObject.has_unread_messages = true;
+      }
+      else if (p.user.equals(senderId)) {
+        participantObject.has_unread_messages = false;
+        participantObject.is_new = false;
+        participantObject.has_sent_message = true;
+      }
+      return participantObject;
     });
 
     conversation.markModified('participants');
@@ -748,7 +710,6 @@ exports.postMessage = async (req, res) => {
 
     // ================= PUSH NOTIFICATION =================
     try {
-      const senderUser = await User.findById(senderId);
       const receiver = await User.findById(targetRecipientId);
       const sender = await User.findById(senderId);
 
@@ -758,7 +719,7 @@ exports.postMessage = async (req, res) => {
           sender,
           text,
           conversation._id
-      );
+        );
 
         console.log("✅ Message notification poslata");
       }
@@ -767,12 +728,12 @@ exports.postMessage = async (req, res) => {
         "❌ Greška pri slanju message notifikacije:",
         notificationError
       );
-  }
+    }
 
-  res.status(201).json({
-    ...newMessage.toObject(),
-    conversationId: conversation._id.toString()
-  });
+    res.status(201).json({
+      ...newMessage.toObject(),
+      conversationId: conversation._id.toString()
+    });
   } catch (error) {
     console.error("[Controller] POST MESSAGE - Error:", error);
     res.status(500).json({ message: "Greška prilikom slanja poruke" });
@@ -806,23 +767,20 @@ exports.getIncomingLikes = async (req, res) => {
     const currentUserId = req.user.id;
     console.log('[INCOMING LIKES] Poziv za userId:', currentUserId);
 
-    // Dohvati trenutnog korisnika
     const user = await User.findById(currentUserId).lean();
     if (!user) {
       console.log('[INCOMING LIKES] Korisnik nije pronađen:', currentUserId);
       return res.status(404).json({ message: 'User not found' });
     }
 
-    // Očisti ID-jeve za likes i matches
     const incomingLikeIds = (user.likes || [])
-      .filter(id => id) // izbaci null/undefined
+      .filter(id => id)
       .map(id => id.toString());
 
     const matchIds = (user.matches || [])
       .filter(id => id)
       .map(id => id.toString());
 
-    // Filter parametri iz query stringa
     const { minAge, maxAge, gender, latitude, longitude, maxDistance } = req.query;
     const min = Number(minAge) || 18;
     const max = Number(maxAge) || 99;
@@ -830,9 +788,8 @@ exports.getIncomingLikes = async (req, res) => {
     const minBirthDate = new Date(today.getFullYear() - max, today.getMonth(), today.getDate());
     const maxBirthDate = new Date(today.getFullYear() - min, today.getMonth(), today.getDate());
 
-    // Pronađi sve korisnike koji su lajkovali trenutnog korisnika
     let query = {
-      _id: { 
+      _id: {
         $in: incomingLikeIds,
         $nin: [user._id.toString(), ...matchIds]
       },
@@ -884,7 +841,6 @@ exports.getIncomingLikes = async (req, res) => {
       `)
       .lean();
 
-    // Dodaj locationCity u location objekat
     users = users.map(u => {
       if (u.location && u.locationCity) {
         u.location.locationCity = u.locationCity;
@@ -907,6 +863,7 @@ exports.getIncomingLikes = async (req, res) => {
     return res.status(500).json({ message: "Server error" });
   }
 };
+
 // ========== TRAJNI FILTERI ==========
 exports.saveUserFilters = async (req, res) => {
   try {
@@ -937,7 +894,6 @@ exports.getUserFilters = async (req, res) => {
   }
 };
 
-
 // ================= UNMATCH =================
 exports.unmatchUser = async (req, res) => {
   const currentUserId = req.user.id;
@@ -959,13 +915,9 @@ exports.unmatchUser = async (req, res) => {
 
     const otherUserId = otherParticipant.user;
 
-    // 1️⃣ obriši poruke
     await Message.deleteMany({ conversationId: conversation._id });
-
-    // 2️⃣ obriši konverzaciju
     await Conversation.findByIdAndDelete(conversation._id);
 
-    // 3️⃣ ukloni match
     await User.updateOne(
       { _id: currentUserId },
       { $pull: { matches: otherUserId } }
@@ -976,9 +928,6 @@ exports.unmatchUser = async (req, res) => {
       { $pull: { matches: currentUserId } }
     );
 
-    
-    //  SOCKET EVENT
-   
     const targetSockets = global.onlineUsers.get(
       otherUserId.toString()
     );
@@ -1001,9 +950,9 @@ exports.unmatchUser = async (req, res) => {
     });
   }
 };
+
 exports.createMatchAndNotify = async (userId1, userId2) => {
   try {
-    // 1. Provera da li match već postoji (da se ne dupliraju unosi)
     const existingMatch = await Match.findOne({
       $or: [
         { user1: userId1, user2: userId2 },
@@ -1016,11 +965,9 @@ exports.createMatchAndNotify = async (userId1, userId2) => {
       return;
     }
 
-    // 2. Kreiranje match-a
     await Match.create({ user1: userId1, user2: userId2 });
     console.log(`[Controller] Match uspešno kreiran u bazi.`);
 
-    // 3. Slanje notifikacija (koristimo Promise.allSettled da bi obe prošle nezavisno)
     const notificationPromises = [
       sendMatchNotification(
         { fcmToken: userId1.fcmToken, _id: userId1 },
@@ -1061,12 +1008,10 @@ exports.blockUser = async (req, res) => {
       return res.status(400).json({ message: "Ne možete blokirati sami sebe." });
     }
 
-    // 1. Dodaj targetUserId u niz blockedUsers ulogovanog korisnika
     await User.findByIdAndUpdate(currentUserId, {
       $addToSet: { blockedUsers: targetUserId }
     });
 
-    // 2. Pronađi i obriši postojati Conversation i Message ako postoje
     const conversation = await Conversation.findOne({
       "participants.user": { $all: [currentUserId, targetUserId] }
     });
@@ -1076,7 +1021,6 @@ exports.blockUser = async (req, res) => {
       await Conversation.findByIdAndDelete(conversation._id);
     }
 
-    // 3. Ukloni iz niza matches kod oba korisnika
     await User.updateOne(
       { _id: currentUserId },
       { $pull: { matches: targetUserId } }
@@ -1086,7 +1030,6 @@ exports.blockUser = async (req, res) => {
       { $pull: { matches: currentUserId } }
     );
 
-    // 4. Obavesti drugog korisnika preko Socket.io ako je online
     const targetSockets = global.onlineUsers?.get(targetUserId.toString());
     if (targetSockets && conversation) {
       targetSockets.forEach((sid) => {

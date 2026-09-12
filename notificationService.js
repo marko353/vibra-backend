@@ -16,7 +16,7 @@ async function handleInvalidToken(token) {
 }
 
 // ================= PROVERA NOTIFICATION SETTINGS =================
-// type: 'matches' | 'messages' (mapira se na user.notifications.<type>)
+// type: 'matches' | 'messages' | 'likes' (mapira se na user.notifications.<type>)
 function isNotificationEnabled(user, type) {
   if (!user || !user.notifications) {
     console.log(`[FCM] Notifications podešavanja ne postoje za korisnika ${user?._id}, default: uključeno`);
@@ -118,4 +118,40 @@ async function sendMessageNotification(userToNotify, sender, messageContent, con
   }
 }
 
-module.exports = { sendPushNotification, sendMatchNotification, sendMessageNotification };
+// ✅ NOVA FUNKCIJA — LIKE notifikacija
+async function sendLikeNotification(userToNotify, likerUser) {
+  try {
+    if (!userToNotify?.fcmToken) {
+      console.error("[FCM] sendLikeNotification: missing fcmToken");
+      return;
+    }
+
+    // ✅ Provera notification settings za tip 'likes'
+    if (!isNotificationEnabled(userToNotify, 'likes')) {
+      console.log(`[FCM] sendLikeNotification: korisnik ${userToNotify._id} je isključio like notifikacije, preskačem slanje.`);
+      return;
+    }
+
+    await sendPushNotification(
+      userToNotify.fcmToken,
+      "New Like! 👍",
+      `${likerUser.fullName || 'Someone'} liked your profile!`,
+      {
+        userId: likerUser._id.toString(),
+        userName: likerUser.fullName || "",
+        userAvatar: likerUser.avatar || "",
+        type: "LIKE",
+      }
+    );
+  } catch (error) {
+    console.error("[FCM] sendLikeNotification error:", error);
+    throw error;
+  }
+}
+
+module.exports = {
+  sendPushNotification,
+  sendMatchNotification,
+  sendMessageNotification,
+  sendLikeNotification,
+};

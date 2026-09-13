@@ -167,6 +167,7 @@ exports.updateProfile = async (req, res) => {
       'languages',
       'interests',
       'notifications',
+      'deleteAccount',
     ];
 
     const finalUpdatePayload = {};
@@ -1107,5 +1108,29 @@ exports.reportUser = async (req, res) => {
   } catch (error) {
     console.error("[Controller] REPORT USER - Error:", error);
     res.status(500).json({ message: "Server error" });
+  }
+};
+
+// ================= DELETE ACCOUNT =================
+exports.deleteAccount = async (req, res) => {
+  try {
+    const userId = req.user.id || req.user._id || req.user.userId;
+
+    console.log(`\n================== [DELETE ACCOUNT] ==================`);
+    console.log(`Deleting account for User ID: ${userId}`);
+
+    const deletedUser = await User.findByIdAndDelete(userId);
+
+    if (!deletedUser) {
+      return res.status(404).json({ message: "User not found" });
+    }
+
+    console.log(`User ${userId} deleted successfully.`);
+    console.log(`======================================================\n`);
+
+    return res.status(200).json({ message: "Account deleted successfully." });
+  } catch (error) {
+    console.error("Delete account error:", error);
+    return res.status(500).json({ message: "Server error", error: error.message });
   }
 };

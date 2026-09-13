@@ -26,7 +26,8 @@ const {
   blockUser,
   unblockUser,
   getBlockedUsers,
-  reportUser
+  reportUser,
+  deleteAccount,
 } = require('../controllers/userController');
 
 const User = require("../models/User");
@@ -338,6 +339,13 @@ router.put(
   '/update-profile',
   authMiddleware,
   updateProfile
+);
+
+/* ===================== DELETE ACCOUNT ===================== */
+router.delete(
+  '/delete-account',
+  authMiddleware,
+  deleteAccount
 );
 
 /* ⚠️ DINAMIČKA RUTA UVEK NA KRAJU */

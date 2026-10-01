@@ -28,6 +28,7 @@ const {
   getBlockedUsers,
   reportUser,
   deleteAccount,
+  getDiscoverFeed,
 } = require('../controllers/userController');
 
 const User = require("../models/User");
@@ -241,6 +242,21 @@ router.get(
   '/potential-matches',
   authMiddleware,
   getPotentialMatches
+);
+
+/* ===================== DISCOVER TAB ===================== */
+/*
+  ⚠️ OVO MORA DA BUDE PRE:
+  router.get('/:userId', ...)
+
+  Isti razlog kao kod '/blocked' ispod — '/discover' je jedan URL
+  segment i mora stići do getDiscoverFeed pre nego što dinamička ruta
+  pokuša da ga protumači kao userId parametar.
+*/
+router.get(
+  '/discover',
+  authMiddleware,
+  getDiscoverFeed
 );
 
 /* ===================== REORDER PROFILE PICTURES ===================== */

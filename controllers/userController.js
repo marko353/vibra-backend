@@ -378,6 +378,201 @@ exports.getPotentialMatches = async (req, res) => {
   }
 };
 
+// ========================================================================
+
+// ========================================================================
+
+const DISCOVER_BATCH_WINDOW_MS = 24 * 60 * 60 * 1000;
+const DISCOVER_SECTION_LIMIT = 6;
+const DISCOVER_CANDIDATE_POOL_SIZE = 60; // koliko kandidata povlačimo pre scoring-a
+
+// Polja koja vraćamo za svaki profil u Discover odgovoru — ista lista kao
+// getPotentialMatches/getIncomingLikes, radi doslednosti sa ostatkom app-a.
+const DISCOVER_SELECT_FIELDS = `
+  fullName
+  profilePictures
+  avatar
+  birthDate
+  bio
+  relationshipType
+  interests
+  height
+  languages
+  horoscope
+  familyPlans
+  communicationStyle
+  loveStyle
+  pets
+  drinks
+  smokes
+  workout
+  diet
+  jobTitle
+  education
+  location
+  locationCity
+  showLocation
+  gender
+  sexualOrientation
+`;
+
+// Broj zajedničkih interesovanja između trenutnog korisnika i kandidata.
+function countSharedInterests(userInterests = [], candidateInterests = []) {
+  const userSet = new Set((userInterests || []).map((i) => String(i).toLowerCase()));
+  return (candidateInterests || []).filter((i) =>
+    userSet.has(String(i).toLowerCase())
+  ).length;
+}
+
+// Izgradi osnovni filter (isti obrazac kao getPotentialMatches) —
+// isključi sebe/matches/blocked, age/gender/geo iz user.filters.
+async function buildDiscoverBaseFilter(user, query) {
+  const ageRange = user.filters?.ageRange || [18, 99];
+  const min = Number(query.minAge) || ageRange[0] || 18;
+  const max = Number(query.maxAge) || ageRange[1] || 99;
+
+  const today = new Date();
+  const minBirthDate = new Date(today.getFullYear() - max, today.getMonth(), today.getDate());
+  const maxBirthDate = new Date(today.getFullYear() - min, today.getMonth(), today.getDate());
+
+  const blockedByMe = (user.blockedUsers || []).map((id) => id.toString());
+  const usersWhoBlockedMe = await User.find({ blockedUsers: user._id }).select("_id").lean();
+  const blockedMe = usersWhoBlockedMe.map((u) => u._id.toString());
+
+  const filter = {
+    _id: {
+      $nin: [user._id, ...(user.matches || []), ...blockedByMe, ...blockedMe],
+    },
+    birthDate: { $gte: minBirthDate, $lte: maxBirthDate },
+  };
+
+  const genderFilter = query.gender || user.filters?.gender;
+  if (genderFilter === "male" || genderFilter === "female") {
+    filter.gender = genderFilter;
+  }
+
+  // Lokacija: koristi query lat/lon ako je prosleđena, inače fallback na
+  // korisnikovu sačuvanu lokaciju (ako postoji i nije [0, 0]).
+  const hasQueryCoords = query.latitude && query.longitude;
+  const hasUserCoords =
+    user.location?.coordinates &&
+    (user.location.coordinates[0] !== 0 || user.location.coordinates[1] !== 0);
+
+  if (hasQueryCoords || hasUserCoords) {
+    const lat = hasQueryCoords ? Number(query.latitude) : user.location.coordinates[1];
+    const lon = hasQueryCoords ? Number(query.longitude) : user.location.coordinates[0];
+    const distanceKm = Number(query.maxDistance) || user.filters?.distance || 50;
+
+    filter.location = {
+      $near: {
+        $geometry: { type: "Point", coordinates: [lon, lat] },
+        $maxDistance: distanceKm * 1000,
+      },
+    };
+  }
+
+  return filter;
+}
+
+// ================= GET DISCOVER FEED =================
+exports.getDiscoverFeed = async (req, res) => {
+  try {
+    const user = await User.findById(req.user.id);
+    if (!user) {
+      return res.status(404).json({ message: "User not found" });
+    }
+
+    const now = Date.now();
+    const batchGeneratedAt = user.discoverBatchGeneratedAt
+      ? user.discoverBatchGeneratedAt.getTime()
+      : null;
+
+    const batchIsFresh =
+      batchGeneratedAt &&
+      now - batchGeneratedAt < DISCOVER_BATCH_WINDOW_MS &&
+      (user.discoverRecommendedIds?.length > 0 || user.discoverSameGoalsIds?.length > 0);
+
+    let recommendedIds = user.discoverRecommendedIds || [];
+    let sameGoalsIds = user.discoverSameGoalsIds || [];
+    let generatedAt = user.discoverBatchGeneratedAt;
+
+    if (!batchIsFresh) {
+      console.log(`[DISCOVER] Generišem nov batch za korisnika ${user._id}`);
+
+      const filter = await buildDiscoverBaseFilter(user, req.query);
+
+      // $near u MongoDB-u vraća rezultate već sortirane po distanci —
+      // oslanjamo se na taj redosled za "Same dating goals" sekciju.
+      const candidates = await User.find(filter)
+        .select(DISCOVER_SELECT_FIELDS)
+        .limit(DISCOVER_CANDIDATE_POOL_SIZE)
+        .lean();
+
+      console.log(`[DISCOVER] Pronađeno ${candidates.length} kandidata u pool-u`);
+
+      // ── Recommended: scoring po zajedničkim interesovanjima + relationshipType ──
+      const scored = candidates.map((candidate) => {
+        const sharedInterests = countSharedInterests(user.interests, candidate.interests);
+        const relationshipBonus =
+          user.relationshipType && candidate.relationshipType === user.relationshipType ? 2 : 0;
+        return { candidate, score: sharedInterests + relationshipBonus };
+      });
+
+      scored.sort((a, b) => b.score - a.score); // stabilno sortiranje u Node.js
+
+      const recommended = scored.slice(0, DISCOVER_SECTION_LIMIT).map((s) => s.candidate);
+      recommendedIds = recommended.map((c) => c._id);
+
+      // ── Same dating goals: equality filter, zadržava distance-sortiran redosled ──
+      const sameGoals = user.relationshipType
+        ? candidates
+            .filter((c) => c.relationshipType === user.relationshipType)
+            .slice(0, DISCOVER_SECTION_LIMIT)
+        : [];
+      sameGoalsIds = sameGoals.map((c) => c._id);
+
+      generatedAt = new Date(now);
+
+      user.discoverBatchGeneratedAt = generatedAt;
+      user.discoverRecommendedIds = recommendedIds;
+      user.discoverSameGoalsIds = sameGoalsIds;
+      await user.save();
+
+      return res.status(200).json({
+        generatedAt: generatedAt.toISOString(),
+        expiresAt: new Date(generatedAt.getTime() + DISCOVER_BATCH_WINDOW_MS).toISOString(),
+        recommended,
+        sameGoals,
+      });
+    }
+
+    // ── Batch je svež — re-hydrate iz baze po sačuvanim ID-jevima ──
+    console.log(`[DISCOVER] Koristim postojeći batch za korisnika ${user._id}`);
+
+    const [recommendedDocs, sameGoalsDocs] = await Promise.all([
+      User.find({ _id: { $in: recommendedIds } }).select(DISCOVER_SELECT_FIELDS).lean(),
+      User.find({ _id: { $in: sameGoalsIds } }).select(DISCOVER_SELECT_FIELDS).lean(),
+    ]);
+
+    // Zadrži originalan redosled iz sačuvanih ID-jeva (Mongo $in ne garantuje redosled).
+    const byId = (docs) => {
+      const map = new Map(docs.map((d) => [d._id.toString(), d]));
+      return (ids) => ids.map((id) => map.get(id.toString())).filter(Boolean);
+    };
+    const orderRecommended = byId(recommendedDocs);
+    const orderSameGoals = byId(sameGoalsDocs);
+
+    return res.status(200).json({
+      generatedAt: generatedAt.toISOString(),
+      expiresAt: new Date(generatedAt.getTime() + DISCOVER_BATCH_WINDOW_MS).toISOString(),
+      recommended: orderRecommended(recommendedIds),
+      sameGoals: orderSameGoals(sameGoalsIds),
+    });
+  } catch (error) {
+    console.error("[Controller] GET DISCOVER FEED - Error:", error);
+    res.status(500).json({ message: "Server error" });
+  }
+};
 // ================= SWIPE ACTION =================
 exports.swipeAction = async (req, res) => {
   try {

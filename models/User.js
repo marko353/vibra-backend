@@ -33,7 +33,7 @@ const UserSchema = new Schema(
     diet: { type: String, default: null },
     jobTitle: { type: String, default: null },
     education: { type: [String], default: [] },
-    
+
     // Podaci o lokaciji
     location: {
       type: {
@@ -64,6 +64,16 @@ const UserSchema = new Schema(
     dislikes: [{ type: Schema.Types.ObjectId, ref: "User" }],
     matches: [{ type: Schema.Types.ObjectId, ref: "User" }],
     blockedUsers: [{ type: Schema.Types.ObjectId, ref: "User" }],
+
+    // ========== DISCOVER TAB — dnevni batch ==========
+    // Batch se generiše na zahtev (lenjo, ne cron-om) kad god prođe >24h
+    // od poslednjeg generisanja, ili kad ova polja još ne postoje.
+    // discoverRecommendedIds/discoverSameGoalsIds su "zamrznut" snapshot
+    // ID-jeva — ponovno otvaranje Discover taba u istom 24h prozoru vraća
+    // iste ljude, ne nov random set.
+    discoverBatchGeneratedAt: { type: Date, default: null },
+    discoverRecommendedIds: [{ type: Schema.Types.ObjectId, ref: "User" }],
+    discoverSameGoalsIds: [{ type: Schema.Types.ObjectId, ref: "User" }],
 
     // Tokeni i timestampovi
     resetPasswordToken: { type: String },

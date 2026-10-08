@@ -16,6 +16,12 @@ const UserSchema = new Schema(
     profilePictures: { type: [String], default: [] },
     avatar: { type: String },
 
+    // Premium status i pretplata
+    isPremium: { type: Boolean, default: false },
+    premiumPlan: { type: String, default: null },
+    premiumExpiresAt: { type: Date, default: null },
+    revenueCatId: { type: String, default: null },
+
     // Podaci za "kartice" profila
     bio: { type: String, default: null },
     relationshipType: { type: String, default: null },
@@ -66,11 +72,6 @@ const UserSchema = new Schema(
     blockedUsers: [{ type: Schema.Types.ObjectId, ref: "User" }],
 
     // ========== DISCOVER TAB — dnevni batch ==========
-    // Batch se generiše na zahtev (lenjo, ne cron-om) kad god prođe >24h
-    // od poslednjeg generisanja, ili kad ova polja još ne postoje.
-    // discoverRecommendedIds/discoverSameGoalsIds su "zamrznut" snapshot
-    // ID-jeva — ponovno otvaranje Discover taba u istom 24h prozoru vraća
-    // iste ljude, ne nov random set.
     discoverBatchGeneratedAt: { type: Date, default: null },
     discoverRecommendedIds: [{ type: Schema.Types.ObjectId, ref: "User" }],
     discoverSameGoalsIds: [{ type: Schema.Types.ObjectId, ref: "User" }],
@@ -97,6 +98,7 @@ UserSchema.pre("save", function (next) {
   console.log(`\n================== [MONGOOSE PRE-SAVE] ==================`);
   console.log(`User ID: ${this._id}`);
   console.log(`Updated Notifications:`, JSON.stringify(this.notifications, null, 2));
+  console.log(`Premium Status: ${this.isPremium} (Plan: ${this.premiumPlan}, Expires: ${this.premiumExpiresAt})`);
   console.log(`==========================================================\n`);
   next();
 });
@@ -110,6 +112,9 @@ UserSchema.pre("findOneAndUpdate", function (next) {
   if (update.$set && update.$set.notifications) {
     console.log(`[NOTIFICATIONS CHANGED]:`, JSON.stringify(update.$set.notifications, null, 2));
   }
+  if (update.$set && update.$set.isPremium !== undefined) {
+    console.log(`[PREMIUM STATUS CHANGED]:`, update.$set.isPremium, update.$set.premiumPlan);
+  }
   console.log(`===========================================================\n`);
   next();
 });
@@ -120,6 +125,7 @@ UserSchema.post("findOneAndUpdate", function (doc) {
     console.log(`\n================== [MONGOOSE POST-UPDATE] ==================`);
     console.log(`User ID: ${doc._id} successfully updated.`);
     console.log(`Current saved notifications:`, JSON.stringify(doc.notifications, null, 2));
+    console.log(`Current saved isPremium:`, doc.isPremium, `(Expires: ${doc.premiumExpiresAt})`);
     console.log(`============================================================\n`);
   }
 });

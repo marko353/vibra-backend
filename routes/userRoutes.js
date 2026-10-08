@@ -31,6 +31,9 @@ const {
   getDiscoverFeed,
 } = require('../controllers/userController');
 
+const { revenueCatWebhook } = require('../controllers/revenueCatWebhook');
+const { syncPremium } = require('../controllers/syncPremium');
+
 const User = require("../models/User");
 
 const router = express.Router();
@@ -47,18 +50,28 @@ router.post('/login', (req, res, next) => {
   next();
 }, login);
 
-/* ===================== SAVE FCM TOKEN ===================== */
-/*
-  OVO MORA DA BUDE PRE:
-  router.get('/:userId', ...)
+/* ===================== REVENUECAT WEBHOOK ===================== */
 
-  Poziva se svaki put nakon login-a ili app starta.
+/*
+  Premium status se upisuje ISKLJUČIVO ovde, nikada na zahtev klijenta.
+  Ruta nema authMiddleware jer je zove RevenueCat, ali je zaštićena
+  Authorization headerom (REVENUECAT_WEBHOOK_SECRET) unutar kontrolera.
 */
+router.post(
+  '/revenuecat-webhook',
+  (req, res, next) => {
+    console.log(`[Ruta] POST /api/user/revenuecat-webhook (od ${req.ip})`);
+    next();
+  },
+  revenueCatWebhook
+);
+
+/* ===================== SAVE FCM TOKEN ===================== */
 router.post('/save-fcm-token', authMiddleware, async (req, res) => {
   try {
-    console.log("Request body:", req.body); // Logovanje za debagovanje
+    console.log("Request body:", req.body);
 
-    const { fcmToken } = req.body; // Promenjeno sa 'token' na 'fcmToken'
+    const { fcmToken } = req.body;
 
     if (!fcmToken) {
       return res.status(400).json({
@@ -245,14 +258,6 @@ router.get(
 );
 
 /* ===================== DISCOVER TAB ===================== */
-/*
-  ⚠️ OVO MORA DA BUDE PRE:
-  router.get('/:userId', ...)
-
-  Isti razlog kao kod '/blocked' ispod — '/discover' je jedan URL
-  segment i mora stići do getDiscoverFeed pre nego što dinamička ruta
-  pokuša da ga protumači kao userId parametar.
-*/
 router.get(
   '/discover',
   authMiddleware,
@@ -332,14 +337,6 @@ router.post('/match-notify', authMiddleware, async (req, res) => {
 });
 
 /* ===================== BLOCK / UNBLOCK / REPORT ===================== */
-/*
-  ⚠️ OVO MORA DA BUDE PRE:
-  router.get('/:userId', ...)
-
-  '/blocked' je jedan URL segment, isto kao '/:userId' - da je stavimo
-  POSLE dinamicke rute, Express bi mislio da je "blocked" zapravo
-  userId parametar i nikad ne bi stigla do getBlockedUsers funkcije.
-*/
 router.get('/blocked', authMiddleware, getBlockedUsers);
 router.post('/block/:userId', authMiddleware, blockUser);
 router.delete('/block/:userId', authMiddleware, unblockUser);
@@ -363,7 +360,7 @@ router.delete(
   authMiddleware,
   deleteAccount
 );
-
+router.post('/sync-premium', authMiddleware, syncPremium);
 /* ⚠️ DINAMIČKA RUTA UVEK NA KRAJU */
 router.get('/:userId', authMiddleware, getProfileById);
 

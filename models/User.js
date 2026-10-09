@@ -22,6 +22,11 @@ const UserSchema = new Schema(
     premiumExpiresAt: { type: Date, default: null },
     revenueCatId: { type: String, default: null },
 
+    // Super Like (nedeljni limit, samo za Premium)
+    superLikesUsed: { type: Number, default: 0 },
+    superLikesWeekStart: { type: Date, default: null },
+    superLikedBy: [{ type: Schema.Types.ObjectId, ref: "User" }],
+
     // Podaci za "kartice" profila
     bio: { type: String, default: null },
     relationshipType: { type: String, default: null },

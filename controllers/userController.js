@@ -6,6 +6,7 @@ const Message = require("../models/Message");
 const Match = require('../models/Match');
 const Report = require("../models/Report");
 const { sendMatchNotification, sendMessageNotification, sendLikeNotification } = require('../notificationService');
+const { consumeSuperLike, refundSuperLike } = require('../utils/superLikes');
 const mongoose = require('mongoose'); // Ensure mongoose is imported
 
 const isMongoConnected = () => mongoose.connection.readyState === 1;
@@ -575,6 +576,9 @@ exports.getDiscoverFeed = async (req, res) => {
 };
 // ================= SWIPE ACTION =================
 exports.swipeAction = async (req, res) => {
+  // Da li je Super Like već potrošen u ovom zahtevu (za povraćaj ako nešto pukne)
+  let superLikeConsumed = false;
+
   try {
     const { targetUserId, action } = req.body;
 
@@ -591,9 +595,39 @@ exports.swipeAction = async (req, res) => {
       action,
     });
 
-    // ================= ACTION: LIKE =================
-    if (action === "like") {
-      console.log(`❤️ LIKE: ${user._id} lajkuje ${targetUser._id}`);
+    const isSuperLike = action === "superlike";
+
+    // ================= ACTION: LIKE / SUPERLIKE =================
+    if (action === "like" || isSuperLike) {
+      console.log(
+        `${isSuperLike ? "⭐ SUPER LIKE" : "❤️ LIKE"}: ${user._id} lajkuje ${targetUser._id}`
+      );
+
+      let superLikeInfo = null;
+
+      if (isSuperLike) {
+        if (user._id.equals(targetUser._id)) {
+          return res.status(400).json({ message: "Ne možeš poslati Super Like sebi." });
+        }
+
+        // Već poslat Super Like istoj osobi: ne troši drugi
+        const alreadySuper = (targetUser.superLikedBy || []).some(
+          (id) => id.toString() === user._id.toString()
+        );
+        if (alreadySuper) {
+          return res.status(409).json({ code: "ALREADY_SUPER_LIKED" });
+        }
+
+        // Server proverava Premium i nedeljni limit (ne veruje se aplikaciji)
+        superLikeInfo = await consumeSuperLike(user._id);
+        if (!superLikeInfo.ok) {
+          return res.status(403).json({
+            code: superLikeInfo.reason, // NOT_PREMIUM ili LIMIT_REACHED
+            resetsAt: superLikeInfo.resetsAt || null,
+          });
+        }
+        superLikeConsumed = true;
+      }
 
       const isMutualLike = user.likes.some(
         (id) => id.toString() === targetUser._id.toString()
@@ -605,11 +639,21 @@ exports.swipeAction = async (req, res) => {
       if (isMutualLike) {
         console.log("🔥 MATCH OCCURRED - Obostrani lajk detektovan");
 
+        // Match je ionako tu, pa Super Like ne treba da se troši
+        if (isSuperLike) {
+          await refundSuperLike(user._id);
+          superLikeConsumed = false;
+        }
+
         user.matches.addToSet(targetUser._id);
         targetUser.matches.addToSet(user._id);
 
         user.likes.pull(targetUser._id);
         targetUser.likes.pull(user._id);
+
+        // Očisti Super Like oznake između ova dva korisnika
+        user.superLikedBy?.pull(targetUser._id);
+        targetUser.superLikedBy?.pull(user._id);
 
         let conversationId = null;
         try {
@@ -668,18 +712,29 @@ exports.swipeAction = async (req, res) => {
       console.log("👍 Nema matcha - dodajem lajk u targetUser.likes");
 
       targetUser.likes.addToSet(user._id);
+      if (isSuperLike) {
+        targetUser.superLikedBy.addToSet(user._id);
+      }
       await targetUser.save();
 
       // 🔔 SOCKET: Javi drugoj osobi da je dobila lajk
       const targetSockets = global.onlineUsers.get(targetUser._id.toString());
       if (targetSockets) {
+        const likePayload = {
+          fromUserId: user._id,
+          fullName: user.fullName,
+          avatar: user.avatar,
+          birthDate: user.birthDate,
+        };
+
         targetSockets.forEach((sid) => {
-          global.io.to(sid).emit("likeReceived", {
-            fromUserId: user._id,
-            fullName: user.fullName,
-            avatar: user.avatar,
-            birthDate: user.birthDate,
-          });
+          // likeReceived ostaje za sve (da se lista lajkova osveži kao i do sada)
+          global.io.to(sid).emit("likeReceived", likePayload);
+
+          // Dodatni događaj samo za Super Like (globalna kartica u aplikaciji)
+          if (isSuperLike) {
+            global.io.to(sid).emit("superLikeReceived", likePayload);
+          }
         });
       }
 
@@ -691,7 +746,13 @@ exports.swipeAction = async (req, res) => {
 
       return res.json({
         match: false,
-        message: "Like sačuvan",
+        message: isSuperLike ? "Super Like sačuvan" : "Like sačuvan",
+        ...(isSuperLike && {
+          superLike: {
+            remaining: superLikeInfo.remaining,
+            resetsAt: superLikeInfo.resetsAt,
+          },
+        }),
       });
     }
 
@@ -700,6 +761,7 @@ exports.swipeAction = async (req, res) => {
       console.log("👎 DISLIKE");
       user.dislikes.addToSet(targetUser._id);
       user.likes.pull(targetUser._id);
+      user.superLikedBy?.pull(targetUser._id);
       await user.save();
 
       return res.json({
@@ -712,6 +774,16 @@ exports.swipeAction = async (req, res) => {
 
   } catch (error) {
     console.error("[swipeAction] Kritična greška:", error.message);
+
+    // Ako je Super Like potrošen, a nešto je posle toga puklo, vrati ga
+    if (superLikeConsumed) {
+      try {
+        await refundSuperLike(req.user.id);
+      } catch (refundError) {
+        console.error("[swipeAction] Povraćaj Super Like-a nije uspeo:", refundError.message);
+      }
+    }
+
     return res.status(500).json({ message: "Server error" });
   }
 };
@@ -977,6 +1049,11 @@ exports.getIncomingLikes = async (req, res) => {
       .filter(id => id)
       .map(id => id.toString());
 
+    // Ko je poslao Super Like (za isticanje na listi lajkova)
+    const superLikedSet = new Set(
+      (user.superLikedBy || []).filter(id => id).map(id => id.toString())
+    );
+
     const { minAge, maxAge, gender, latitude, longitude, maxDistance } = req.query;
     const min = Number(minAge) || 18;
     const max = Number(maxAge) || 99;
@@ -1041,6 +1118,7 @@ exports.getIncomingLikes = async (req, res) => {
       if (u.location && u.locationCity) {
         u.location.locationCity = u.locationCity;
       }
+      u.superLiked = superLikedSet.has(u._id.toString());
       return u;
     });
 

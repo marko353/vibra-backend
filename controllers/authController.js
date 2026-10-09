@@ -6,6 +6,11 @@ const sendEmail = require("../sendEmail");
 
 const client = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
 
+// Rok važenja tokena za prijavu (isti za klasični i Google login).
+// Za mobilnu aplikaciju je kratak rok (npr. 3h) neprikladan jer korisnika
+// izloguje usred korišćenja. Kasnije pređi na access + refresh token.
+const AUTH_TOKEN_EXPIRES_IN = "365d";
+
 // Registracija korisnika
 exports.register = async (req, res) => {
   try {
@@ -53,7 +58,9 @@ exports.login = async (req, res) => {
       return res.status(400).json({ message: "Invalid credentials" });
     }
 
-    const token = jwt.sign({ id: user._id }, process.env.JWT_SECRET, { expiresIn: "3h" });
+    const token = jwt.sign({ id: user._id }, process.env.JWT_SECRET, {
+      expiresIn: AUTH_TOKEN_EXPIRES_IN,
+    });
 
     res.status(200).json({
       message: "Login successful",
@@ -98,7 +105,9 @@ exports.googleLogin = async (req, res) => {
       console.log("✅ Google korisnik već postoji:", email);
     }
 
-    const jwtToken = jwt.sign({ id: user._id }, process.env.JWT_SECRET, { expiresIn: "7d" });
+    const jwtToken = jwt.sign({ id: user._id }, process.env.JWT_SECRET, {
+      expiresIn: AUTH_TOKEN_EXPIRES_IN,
+    });
 
     res.status(200).json({
       id: user._id,

@@ -29,6 +29,7 @@ const {
   reportUser,
   deleteAccount,
   getDiscoverFeed,
+  undoSwipe,
 } = require('../controllers/userController');
 
 const { revenueCatWebhook } = require('../controllers/revenueCatWebhook');
@@ -270,6 +271,8 @@ router.put(
   authMiddleware,
   reorderProfilePictures
 );
+router.post('/swipe', authMiddleware, swipeAction);
+router.post('/swipe/undo', authMiddleware, undoSwipe);
 
 /* ===================== SWIPE ===================== */
 router.post('/swipe', authMiddleware, swipeAction);

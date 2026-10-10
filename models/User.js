@@ -76,6 +76,15 @@ const UserSchema = new Schema(
     matches: [{ type: Schema.Types.ObjectId, ref: "User" }],
     blockedUsers: [{ type: Schema.Types.ObjectId, ref: "User" }],
 
+    // Poslednji swipe: koristi se za Rewind (poništavanje poslednjeg swipe-a)
+    lastSwipe: {
+      targetUserId: { type: Schema.Types.ObjectId, ref: "User", default: null },
+      action: { type: String }, // "like" | "superlike" | "dislike"
+      wasLikedByTarget: { type: Boolean, default: false },
+      wasSuperLikedByTarget: { type: Boolean, default: false },
+      at: { type: Date, default: null },
+    },
+
     // ========== DISCOVER TAB — dnevni batch ==========
     discoverBatchGeneratedAt: { type: Date, default: null },
     discoverRecommendedIds: [{ type: Schema.Types.ObjectId, ref: "User" }],

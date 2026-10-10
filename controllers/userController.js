@@ -6,8 +6,11 @@ const Message = require("../models/Message");
 const Match = require('../models/Match');
 const Report = require("../models/Report");
 const { sendMatchNotification, sendMessageNotification, sendLikeNotification } = require('../notificationService');
-const { consumeSuperLike, refundSuperLike } = require('../utils/superLikes');
+const { consumeSuperLike, refundSuperLike, isPremiumActive } = require('../utils/superLikes');
 const mongoose = require('mongoose'); // Ensure mongoose is imported
+
+// Rewind (poništavanje poslednjeg swipe-a): true = samo Premium, false = svi korisnici
+const REWIND_REQUIRES_PREMIUM = true;
 
 const isMongoConnected = () => mongoose.connection.readyState === 1;
 
@@ -672,6 +675,9 @@ exports.swipeAction = async (req, res) => {
           console.error("❌ conversation error:", e);
         }
 
+        // Match se ne može poništiti (Rewind), pa obriši zapis o poslednjem swipe-u
+        user.set("lastSwipe", undefined);
+
         await user.save();
         await targetUser.save();
 
@@ -717,6 +723,22 @@ exports.swipeAction = async (req, res) => {
       }
       await targetUser.save();
 
+      // Zapamti poslednji swipe radi Rewind-a (poništavanja)
+      await User.updateOne(
+        { _id: user._id },
+        {
+          $set: {
+            lastSwipe: {
+              targetUserId: targetUser._id,
+              action: isSuperLike ? "superlike" : "like",
+              wasLikedByTarget: false,
+              wasSuperLikedByTarget: false,
+              at: new Date(),
+            },
+          },
+        }
+      );
+
       // 🔔 SOCKET: Javi drugoj osobi da je dobila lajk
       const targetSockets = global.onlineUsers.get(targetUser._id.toString());
       if (targetSockets) {
@@ -759,6 +781,17 @@ exports.swipeAction = async (req, res) => {
     // ================= ACTION: DISLIKE =================
     if (action === "dislike") {
       console.log("👎 DISLIKE");
+
+      // Zapamti poslednji swipe radi Rewind-a. Dislike briše dolazni lajk
+      // (user.likes.pull ispod), pa pamtimo da li ga je ta osoba imala.
+      user.lastSwipe = {
+        targetUserId: targetUser._id,
+        action: "dislike",
+        wasLikedByTarget: (user.likes || []).some((id) => id.equals(targetUser._id)),
+        wasSuperLikedByTarget: (user.superLikedBy || []).some((id) => id.equals(targetUser._id)),
+        at: new Date(),
+      };
+
       user.dislikes.addToSet(targetUser._id);
       user.likes.pull(targetUser._id);
       user.superLikedBy?.pull(targetUser._id);
@@ -784,6 +817,69 @@ exports.swipeAction = async (req, res) => {
       }
     }
 
+    return res.status(500).json({ message: "Server error" });
+  }
+};
+
+// ================= UNDO SWIPE (REWIND) =================
+exports.undoSwipe = async (req, res) => {
+  try {
+    const user = await User.findById(req.user.id);
+    if (!user) {
+      return res.status(404).json({ message: "Korisnik nije pronađen" });
+    }
+
+    // Rewind je Premium funkcija (promeni REWIND_REQUIRES_PREMIUM da ga otvoriš svima)
+    if (REWIND_REQUIRES_PREMIUM && !isPremiumActive(user)) {
+      return res.status(403).json({ code: "NOT_PREMIUM" });
+    }
+
+    const last = user.lastSwipe;
+    if (!last || !last.targetUserId) {
+      return res.status(404).json({ code: "NOTHING_TO_UNDO" });
+    }
+
+    const targetId = last.targetUserId;
+
+    // Ako su u međuvremenu postali match, poništavanje nije moguće
+    if ((user.matches || []).some((id) => id.equals(targetId))) {
+      user.set("lastSwipe", undefined);
+      await user.save();
+      return res.status(409).json({ code: "ALREADY_MATCHED" });
+    }
+
+    if (last.action === "dislike") {
+      // Vrati karticu: skini dislike i vrati dolazni lajk ako ga je ta osoba imala
+      user.dislikes.pull(targetId);
+      if (last.wasLikedByTarget) user.likes.addToSet(targetId);
+      if (last.wasSuperLikedByTarget) user.superLikedBy.addToSet(targetId);
+    } else {
+      // like / superlike: povuci lajk sa druge strane
+      await User.updateOne(
+        { _id: targetId },
+        { $pull: { likes: user._id, superLikedBy: user._id } }
+      );
+
+      // Super Like se vraća na račun
+      if (last.action === "superlike") {
+        await refundSuperLike(user._id);
+      }
+
+      // Javi drugoj strani da je lajk povučen (osveži listu / ukloni karticu)
+      const targetSockets = global.onlineUsers?.get(targetId.toString());
+      if (targetSockets) {
+        targetSockets.forEach((sid) => {
+          global.io.to(sid).emit("likeRetracted", { fromUserId: user._id });
+        });
+      }
+    }
+
+    user.set("lastSwipe", undefined);
+    await user.save();
+
+    return res.json({ success: true, action: last.action });
+  } catch (error) {
+    console.error("[undoSwipe] Greška:", error.message);
     return res.status(500).json({ message: "Server error" });
   }
 };

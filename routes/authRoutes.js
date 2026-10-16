@@ -9,6 +9,7 @@ const {
   resetPasswordRedirect,
 } = require("../controllers/authController");
 
+const phoneController = require("../controllers/phoneController");
 const router = express.Router();
 
 router.post("/register", register);
@@ -18,5 +19,7 @@ router.post("/google", googleLogin);
 router.post("/forgot-password", forgotPassword);
 router.post("/reset-password", resetPassword);
 router.get("/reset-password-redirect", resetPasswordRedirect);
+router.post("/send-code", phoneController.sendPhoneLoginCode);
+router.post("/verify-code", phoneController.verifyPhoneLoginCode);
 
 module.exports = router;

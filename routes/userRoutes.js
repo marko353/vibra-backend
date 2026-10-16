@@ -34,6 +34,7 @@ const {
 
 const { revenueCatWebhook } = require('../controllers/revenueCatWebhook');
 const { syncPremium } = require('../controllers/syncPremium');
+const phoneController = require("../controllers/phoneController");
 
 const User = require("../models/User");
 
@@ -363,6 +364,12 @@ router.delete(
   authMiddleware,
   deleteAccount
 );
+/*=================== phone Login ===================== */
+router.get("/phone", authMiddleware, phoneController.getPhoneStatus);
+router.post("/phone/send-code", authMiddleware, phoneController.sendAddPhoneCode);
+router.post("/phone/verify", authMiddleware, phoneController.verifyAddPhone);
+router.delete("/phone", authMiddleware, phoneController.removePhone);
+
 router.post('/sync-premium', authMiddleware, syncPremium);
 /* ⚠️ DINAMIČKA RUTA UVEK NA KRAJU */
 router.get('/:userId', authMiddleware, getProfileById);

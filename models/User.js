@@ -4,13 +4,27 @@ const { Schema, model } = require("mongoose");
 const UserSchema = new Schema(
   {
     // Osnovni podaci o autentifikaciji
-    username: { type: String, unique: true },
-    email: { type: String, required: true, unique: true },
+    username: { type: String, unique: true, sparse: true },
+
+    // VAŽNO: email, password i phone NEMAJU default: null.
+    // Jedinstveni (sparse) indeks preskače samo polja koja ne postoje;
+    // polje sa vrednošću null se indeksira, pa bi drugi korisnik bez emaila
+    // (ili bez telefona) dobio E11000 duplicate key.
+    email: { type: String, unique: true, sparse: true },
     password: { type: String },
     fullName: { type: String },
     birthDate: { type: Date },
     googleId: { type: String },
     isAdmin: { type: Boolean, default: false },
+
+    // Telefon i verifikacija (za SMS Login).
+    // select: false: pun broj se ne vraća u upitima osim ako se izričito traži
+    // (.select("+phone")), da ne procuri u tuđe profile.
+    phone: { type: String, unique: true, sparse: true, select: false },
+    phoneVerified: {
+      type: Boolean,
+      default: false
+    },
 
     // Podaci za profilne slike
     profilePictures: { type: [String], default: [] },
@@ -144,5 +158,24 @@ UserSchema.post("findOneAndUpdate", function (doc) {
   }
 });
 
+const User = model("User", UserSchema);
+
+// LOG: Indeksi kolekcije "users" pri pokretanju servera.
+// User.init() pravi indekse iz šeme (sačeka konekciju) i baca grešku ako ne uspe
+// (npr. zbog duplikata). Ako je neki unique indeks "sparse: false", registracija
+// bez tog polja (npr. bez emaila) puca sa E11000.
+User.init()
+  .then(async () => {
+    const indexes = await User.collection.indexes();
+    console.log("\n📚 [INDEXES] kolekcija users:");
+    indexes.forEach((i) =>
+      console.log(`   ${i.name} | unique: ${!!i.unique} | sparse: ${!!i.sparse}`)
+    );
+    console.log("");
+  })
+  .catch((err) =>
+    console.error("❌ [INDEXES] greška pri kreiranju indeksa:", err.message)
+  );
+
 // Direktno eksportujemo model
-module.exports = model("User", UserSchema);
+module.exports = User;

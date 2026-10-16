@@ -1,3 +1,4 @@
+const crypto = require("crypto");
 const User = require("../models/User");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
@@ -6,35 +7,128 @@ const sendEmail = require("../sendEmail");
 
 const client = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
 
-// Rok važenja tokena za prijavu (isti za klasični i Google login).
-// Za mobilnu aplikaciju je kratak rok (npr. 3h) neprikladan jer korisnika
-// izloguje usred korišćenja. Kasnije pređi na access + refresh token.
+// Rok važenja tokena za prijavu
 const AUTH_TOKEN_EXPIRES_IN = "365d";
 
-// Registracija korisnika
+// Tajna za phoneToken: mora biti ista kao u phoneController.js (tamo se token izdaje)
+const phoneSignupSecret = () => process.env.JWT_SECRET + ":phone-signup";
+
+const MIN_AGE = 18;
+
+const isAdult = (birthDate) => {
+  const date = new Date(birthDate);
+  if (isNaN(date.getTime())) return false;
+
+  const now = new Date();
+  let age = now.getFullYear() - date.getFullYear();
+  const monthDiff = now.getMonth() - date.getMonth();
+  if (monthDiff < 0 || (monthDiff === 0 && now.getDate() < date.getDate())) age--;
+
+  return age >= MIN_AGE;
+};
+
+// Nasumično korisničko ime: nikad se ne gradi od broja telefona ili emaila
+const randomUsername = () => `user_${crypto.randomBytes(4).toString("hex")}`;
+
+// Registracija korisnika (email + lozinka, ili telefon potvrđen SMS kodom)
+//
+// Telefon se NE prima iz tela zahteva. Klijent dobija phoneToken od
+// POST /api/auth/verify-code (kad je kod tačan, a broj nema nalog) i šalje ga ovde.
+// Broj se uzima iz tokena koji je potpisao server, pa ga niko ne može lažirati.
 exports.register = async (req, res) => {
   try {
-    const { fullName, username, birthDate, email, password, gender } = req.body;
-    console.log("📤 Registracija pokušana za:", email);
+    const { fullName, username, birthDate, email, password, gender, phoneToken } = req.body;
 
-    if (!['male', 'female', 'other'].includes(gender)) {
-      return res.status(400).json({ message: 'Pol je obavezan i mora biti "male", "female" ili "other".' });
+    if (!["male", "female", "other"].includes(gender)) {
+      return res
+        .status(400)
+        .json({ message: 'Pol je obavezan i mora biti "male", "female" ili "other".' });
     }
 
-    const existingUser = await User.findOne({ email });
-    if (existingUser) {
-      console.log("❌ Korisnik već postoji:", email);
-      return res.status(400).json({ message: "User already exists" });
+    if (!isAdult(birthDate)) {
+      return res.status(400).json({ message: "You must be at least 18 years old." });
     }
 
-    const hashedPassword = await bcrypt.hash(password, 10);
-    const newUser = new User({ fullName, username, birthDate, email, password: hashedPassword, gender });
+    // Potvrđen telefon (samo preko tokena koji je izdao server)
+    let verifiedPhone;
+    if (phoneToken) {
+      try {
+        const decoded = jwt.verify(phoneToken, phoneSignupSecret());
+        if (decoded.purpose !== "phone-signup" || !decoded.phone) {
+          throw new Error("Invalid phone token");
+        }
+        verifiedPhone = decoded.phone;
+      } catch {
+        return res.status(400).json({
+          message: "Phone verification expired. Please verify your number again.",
+        });
+      }
+    }
+
+    const normalizedEmail = email ? String(email).trim().toLowerCase() : undefined;
+
+    if (!normalizedEmail && !verifiedPhone) {
+      return res
+        .status(400)
+        .json({ message: "Email or a verified phone number is required." });
+    }
+
+    if (normalizedEmail && (!password || String(password).length < 6)) {
+      return res.status(400).json({ message: "Password must be at least 6 characters" });
+    }
+
+    console.log("📤 Registracija pokušana:", normalizedEmail ? "email" : "phone");
+
+    if (normalizedEmail && (await User.exists({ email: normalizedEmail }))) {
+      return res.status(400).json({ message: "User with this email already exists" });
+    }
+
+    if (verifiedPhone && (await User.exists({ phone: verifiedPhone }))) {
+      return res.status(400).json({ message: "User with this phone already exists" });
+    }
+
+    // Lozinka samo za email registraciju (kod telefona je nema)
+    const hashedPassword = normalizedEmail ? await bcrypt.hash(password, 10) : undefined;
+
+    // undefined (ne null) za polja koja nisu poslata, da jedinstveni indeksi ne prave duplikate
+    const newUser = new User({
+      fullName,
+      username: username || randomUsername(),
+      birthDate,
+      email: normalizedEmail,
+      password: hashedPassword,
+      gender,
+      phone: verifiedPhone,
+      phoneVerified: !!verifiedPhone,
+    });
 
     await newUser.save();
-    console.log("✅ Korisnik registrovan:", newUser.email);
+    console.log("✅ Korisnik uspešno registrovan:", newUser._id);
 
-    res.status(201).json({ message: "User registered successfully" });
+    // Generišemo JWT token odmah pri registraciji
+    const token = jwt.sign({ id: newUser._id }, process.env.JWT_SECRET, {
+      expiresIn: AUTH_TOKEN_EXPIRES_IN,
+    });
+
+    res.status(201).json({
+      message: "User registered successfully",
+      id: newUser._id,
+      fullName: newUser.fullName,
+      email: newUser.email,
+      token,
+    });
   } catch (error) {
+    // 11000: duplikat jedinstvenog polja (npr. dve istovremene registracije)
+    if (error?.code === 11000) {
+      const field = Object.keys(error.keyPattern || {})[0];
+      const messages = {
+        email: "User with this email already exists",
+        phone: "User with this phone already exists",
+        username: "This username is already taken",
+      };
+      return res.status(400).json({ message: messages[field] || "User already exists" });
+    }
+
     console.error("❌ Greška prilikom registracije:", error);
     res.status(500).json({ message: "Internal server error" });
   }
@@ -44,18 +138,25 @@ exports.register = async (req, res) => {
 exports.login = async (req, res) => {
   try {
     const { email, password } = req.body;
-    console.log("📤 Pokušaj prijave za:", email);
+    console.log("📤 Pokušaj prijave emailom");
 
-    const user = await User.findOne({ email });
+    const user = await User.findOne({ email: email?.trim().toLowerCase() });
+
+    // Ista poruka za nepostojeći nalog i pogrešnu lozinku
     if (!user) {
-      console.log("❌ Korisnik nije pronađen:", email);
-      return res.status(400).json({ message: "User not found" });
+      return res.status(400).json({ message: "Invalid email or password" });
+    }
+
+    // Nalog bez lozinke (Google ili telefon)
+    if (!user.password) {
+      return res.status(400).json({
+        message: "This account doesn't use a password. Log in with Google or your phone number.",
+      });
     }
 
     const isMatch = await bcrypt.compare(password, user.password);
     if (!isMatch) {
-      console.log("❌ Nevalidni podaci za:", email);
-      return res.status(400).json({ message: "Invalid credentials" });
+      return res.status(400).json({ message: "Invalid email or password" });
     }
 
     const token = jwt.sign({ id: user._id }, process.env.JWT_SECRET, {
@@ -79,14 +180,27 @@ exports.login = async (req, res) => {
 exports.googleLogin = async (req, res) => {
   const { token } = req.body;
 
+  // 1. Provera Google tokena: greška ovde je 401
+  let payload;
   try {
     const ticket = await client.verifyIdToken({
       idToken: token,
       audience: process.env.GOOGLE_CLIENT_ID,
     });
+    payload = ticket.getPayload();
+  } catch (error) {
+    console.error("❌ Google token nije validan:", error?.message);
+    return res.status(401).json({ message: "Google authentication failed" });
+  }
 
-    const payload = ticket.getPayload();
-    const { sub: googleId, email, name, picture } = payload;
+  // Ne spajamo naloge po emailu koji Google nije potvrdio
+  if (!payload?.email || !payload.email_verified) {
+    return res.status(401).json({ message: "Your Google email is not verified" });
+  }
+
+  try {
+    const { sub: googleId, name, picture } = payload;
+    const email = payload.email.trim().toLowerCase();
 
     let user = await User.findOne({ email });
 
@@ -96,13 +210,12 @@ exports.googleLogin = async (req, res) => {
         email,
         fullName: name,
         avatar: picture,
-        password: "",
       });
 
       await user.save();
-      console.log("🆕 Google korisnik kreiran:", email);
+      console.log("🆕 Google korisnik kreiran");
     } else {
-      console.log("✅ Google korisnik već postoji:", email);
+      console.log("✅ Google korisnik već postoji");
     }
 
     const jwtToken = jwt.sign({ id: user._id }, process.env.JWT_SECRET, {
@@ -116,8 +229,9 @@ exports.googleLogin = async (req, res) => {
       token: jwtToken,
     });
   } catch (error) {
-    console.error("❌ Google login greška:", error);
-    res.status(401).json({ message: "Google authentication failed" });
+    // Greške baze su 500, a ne "Google authentication failed"
+    console.error("❌ Google login greška (baza):", error);
+    res.status(500).json({ message: "Internal server error" });
   }
 };
 
@@ -128,18 +242,6 @@ exports.logout = (req, res) => {
 };
 
 // Reset password redirect (HTTP → deep link)
-//
-// IZMENA: Android Chrome (i mejl klijenti koji koriste WebView/Custom
-// Tabs) ne garantuju da će auto-redirect preko `window.location.href`
-// ili `<meta http-equiv="refresh">` ka golom custom scheme-u
-// (npr. "vibra-date://...") stvarno proslediti intent OS-u — jer se
-// takva navigacija ne tretira kao pravi "user gesture". Rezultat: link
-// se "tiho" ignoriše, a app se kasnije pokrene hladno (bez URL-a),
-// pa auth guard vrati korisnika na login.
-//
-// `intent://` URI sintaksa je standardan, Google-dokumentovan način
-// da se ovo zaobiđe — Chrome je pouzdano prosleđuje OS-u, sa
-// mogućnošću fallback linka ako app nije instalirana.
 exports.resetPasswordRedirect = (req, res) => {
   const { userId, token } = req.query;
   console.log("🔗 resetPasswordRedirect pozvan:", { userId, token: token?.substring(0, 20) + "..." });
@@ -148,23 +250,15 @@ exports.resetPasswordRedirect = (req, res) => {
   const safeToken = encodeURIComponent(token || '');
 
   const scheme = "vibra-date";
-  const androidPackage = "com.marko353.vibradate"; // <- potvrđeno iz adb izlaza, poklapa se
+  const androidPackage = "com.marko353.vibradate";
 
-  // Klasičan custom-scheme deep link — koristi se za iOS i kao <a href> fallback.
   const plainDeepLink = `${scheme}://reset-password?userId=${safeUserId}&token=${safeToken}`;
-
-  // Fallback URL ako app nije instalirana (prilagodi po potrebi — npr. Play Store link ili landing page).
   const fallbackUrl = `${process.env.BASE_URL || "http://192.168.1.6:5000"}/`;
 
-  // Android intent:// URI — ovo Chrome pouzdano prosleđuje OS-u čak i
-  // kad je navigacija pokrenuta skriptom, ne direktnim klikom korisnika.
   const intentUrl =
     `intent://reset-password?userId=${safeUserId}&token=${safeToken}` +
     `#Intent;scheme=${scheme};package=${androidPackage};` +
     `S.browser_fallback_url=${encodeURIComponent(fallbackUrl)};end`;
-
-  console.log("🔗 plainDeepLink:", plainDeepLink.substring(0, 60) + "...");
-  console.log("🔗 intentUrl:", intentUrl.substring(0, 60) + "...");
 
   res.send(`
     <html>
@@ -182,9 +276,6 @@ exports.resetPasswordRedirect = (req, res) => {
           <p style="font-size: 13px; color: #A0A0AB;">If the app doesn't open automatically, <a id="fallbackLink" href="${plainDeepLink}">click here</a>.</p>
         </div>
         <script>
-          // Detektuj platformu i koristi odgovarajući URI:
-          // - Android: intent:// (pouzdano prosleđen OS-u čak i preko script-navigacije)
-          // - iOS/ostalo: klasičan custom scheme
           var ua = navigator.userAgent || "";
           var isAndroid = /Android/i.test(ua);
 
@@ -192,7 +283,6 @@ exports.resetPasswordRedirect = (req, res) => {
             window.location.href = "${intentUrl}";
           } else {
             window.location.href = "${plainDeepLink}";
-            // iOS ponekad zahteva pravi user-gesture; ostavi vidljiv "click here" link kao fallback.
           }
         </script>
       </body>
@@ -207,9 +297,9 @@ exports.forgotPassword = async (req, res) => {
   if (!email) return res.status(400).json({ message: "Email is required" });
 
   try {
-    const user = await User.findOne({ email });
+    const user = await User.findOne({ email: String(email).trim().toLowerCase() });
 
-    if (!user) {
+    if (!user || !user.password) {
       return res.status(200).json({ message: "Reset password link sent to email" });
     }
 
@@ -232,10 +322,7 @@ exports.forgotPassword = async (req, res) => {
         <table role="presentation" width="100%" border="0" cellspacing="0" cellpadding="0" style="background-color: #0F0F12; padding: 40px 10px;">
           <tr>
             <td align="center">
-              <!-- Card Wrapper -->
               <table role="presentation" width="100%" border="0" cellspacing="0" cellpadding="0" style="max-width: 460px; background-color: #18181F; border-radius: 20px; border: 1px solid #2B2B36; padding: 36px 28px; box-shadow: 0 12px 32px rgba(0,0,0,0.5);">
-                
-                <!-- Logo -->
                 <tr>
                   <td align="center" style="padding-bottom: 24px;">
                     <span style="font-size: 28px; font-weight: 800; background: linear-gradient(135deg, #FF2A85 0%, #8A2BE2 100%); -webkit-background-clip: text; -webkit-text-fill-color: transparent; letter-spacing: -0.5px;">
@@ -243,15 +330,11 @@ exports.forgotPassword = async (req, res) => {
                     </span>
                   </td>
                 </tr>
-
-                <!-- Title -->
                 <tr>
                   <td align="center" style="padding-bottom: 12px;">
                     <h1 style="margin: 0; font-size: 22px; font-weight: 700; color: #FFFFFF;">Reset Your Password</h1>
                   </td>
                 </tr>
-
-                <!-- Body Text -->
                 <tr>
                   <td align="center" style="padding-bottom: 28px;">
                     <p style="margin: 0; font-size: 14px; line-height: 22px; color: #A0A0AB;">
@@ -260,8 +343,6 @@ exports.forgotPassword = async (req, res) => {
                     </p>
                   </td>
                 </tr>
-
-                <!-- CTA Button -->
                 <tr>
                   <td align="center" style="padding-bottom: 28px;">
                     <a href="${resetLink}" target="_blank" style="display: inline-block; padding: 14px 36px; background: linear-gradient(135deg, #FF2A85 0%, #8A2BE2 100%); color: #FFFFFF; text-decoration: none; border-radius: 12px; font-weight: 700; font-size: 15px; box-shadow: 0 4px 20px rgba(255, 42, 133, 0.4);">
@@ -269,8 +350,6 @@ exports.forgotPassword = async (req, res) => {
                     </a>
                   </td>
                 </tr>
-
-                <!-- Direct Link -->
                 <tr>
                   <td align="center" style="padding-bottom: 24px;">
                     <p style="margin: 0 0 8px 0; font-size: 12px; color: #6E6E7A;">
@@ -281,8 +360,6 @@ exports.forgotPassword = async (req, res) => {
                     </p>
                   </td>
                 </tr>
-
-                <!-- Footer Note -->
                 <tr>
                   <td style="border-top: 1px solid #2B2B36; padding-top: 20px;">
                     <p style="margin: 0; font-size: 11px; color: #52525E; text-align: center; line-height: 16px;">
@@ -290,10 +367,7 @@ exports.forgotPassword = async (req, res) => {
                     </p>
                   </td>
                 </tr>
-
               </table>
-              
-              <!-- Bottom Footer -->
               <table role="presentation" width="100%" border="0" cellspacing="0" cellpadding="0" style="max-width: 460px; margin-top: 20px;">
                 <tr>
                   <td align="center">
@@ -303,7 +377,6 @@ exports.forgotPassword = async (req, res) => {
                   </td>
                 </tr>
               </table>
-
             </td>
           </tr>
         </table>
@@ -311,7 +384,7 @@ exports.forgotPassword = async (req, res) => {
       </html>
     `;
 
-    await sendEmail({ to: email, subject, html });
+    await sendEmail({ to: user.email, subject, html });
 
     res.status(200).json({ message: "Reset password link sent to email" });
   } catch (error) {
@@ -330,7 +403,7 @@ exports.resetPassword = async (req, res) => {
 
   try {
     const user = await User.findById(userId);
-    if (!user) return res.status(404).json({ message: "User not found" });
+    if (!user || !user.password) return res.status(404).json({ message: "User not found" });
 
     const secret = process.env.JWT_SECRET + user.password;
     jwt.verify(token, secret);

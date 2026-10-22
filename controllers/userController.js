@@ -7,10 +7,21 @@ const Match = require('../models/Match');
 const Report = require("../models/Report");
 const { sendMatchNotification, sendMessageNotification, sendLikeNotification } = require('../notificationService');
 const { consumeSuperLike, refundSuperLike, isPremiumActive } = require('../utils/superLikes');
+const { sendReportEmail } = require("../utils/sendReportEmail"); // prilagodi putanju ako je fajl drugde
 const mongoose = require('mongoose'); // Ensure mongoose is imported
 
 // Rewind (poništavanje poslednjeg swipe-a): true = samo Premium, false = svi korisnici
 const REWIND_REQUIRES_PREMIUM = true;
+
+// Dozvoljeni razlozi prijave (isti kao u aplikaciji)
+const REPORT_REASONS = [
+  "Fake profile",
+  "Inappropriate photos",
+  "Harassment or offensive behavior",
+  "Spam or scam",
+  "Underage",
+  "Other",
+];
 
 const isMongoConnected = () => mongoose.connection.readyState === 1;
 
@@ -33,6 +44,45 @@ function parseArrayLike(value) {
     return value.split(",").map(s => s.trim()).filter(Boolean);
   }
   return [value];
+}
+
+// Push/socket greška NIKAD ne sme da sruši zahtev kad je lajk/match već upisan u bazu
+// (inače klijent dobije 500, a lajk postoji).
+async function safely(label, fn) {
+  try {
+    await fn();
+  } catch (e) {
+    console.error(`[swipeAction] ${label} failed:`, e.message);
+  }
+}
+
+// Lajk se čuva KOD DRUGE STRANE (target.likes), pa se "koga sam ja lajkovao"
+// traži obrnuto: ko u svom likes nizu ima moj id.
+async function getLikedByMeIds(userId, candidateIds = null) {
+  const q = { likes: userId };
+  if (candidateIds) q._id = { $in: candidateIds };
+  const docs = await User.find(q).select("_id").lean();
+  return docs.map((d) => d._id);
+}
+
+// Vrati postojeću konverzaciju para ili napravi novu.
+// Koristi Conversation.findOrCreateForPair ako je model ažuriran (bez duplikata pri trci),
+// a inače pada na staro ponašanje, pa ništa ne puca ni ako model još nije zamenjen.
+async function getOrCreateConversation(userA, userB, participants) {
+  if (typeof Conversation.findOrCreateForPair === "function") {
+    return Conversation.findOrCreateForPair(userA, userB, participants);
+  }
+
+  let conversation = await Conversation.findOne({
+    "participants.user": { $all: [userA, userB] },
+  });
+  if (!conversation) {
+    console.log("💬 Kreiram novu konverzaciju za match");
+    conversation = await Conversation.create({
+      participants: participants || [{ user: userA }, { user: userB }],
+    });
+  }
+  return conversation;
 }
 
 // ================= LOGIN =================
@@ -387,11 +437,12 @@ exports.getPotentialMatches = async (req, res) => {
 // ========================================================================
 
 const DISCOVER_BATCH_WINDOW_MS = 24 * 60 * 60 * 1000;
-const DISCOVER_SECTION_LIMIT = 6;
+const DISCOVER_SECTION_LIMIT = 3; // frontend prikazuje najviše 3 po sekciji
 const DISCOVER_CANDIDATE_POOL_SIZE = 60; // koliko kandidata povlačimo pre scoring-a
 
-// Polja koja vraćamo za svaki profil u Discover odgovoru — ista lista kao
-// getPotentialMatches/getIncomingLikes, radi doslednosti sa ostatkom app-a.
+// Polja koja vraćamo za svaki profil u Discover odgovoru.
+// `location` (tačne koordinate) je namerno izbačen: klijentu treba samo
+// locationCity, a koordinate drugih korisnika ne treba da napuštaju server.
 const DISCOVER_SELECT_FIELDS = `
   fullName
   profilePictures
@@ -413,7 +464,6 @@ const DISCOVER_SELECT_FIELDS = `
   diet
   jobTitle
   education
-  location
   locationCity
   showLocation
   gender
@@ -428,8 +478,15 @@ function countSharedInterests(userInterests = [], candidateInterests = []) {
   ).length;
 }
 
+// Dodaje `liked` i sakriva grad ako je korisnik isključio prikaz lokacije.
+function toDiscoverProfile(doc, liked = false) {
+  const out = { ...doc, liked };
+  if (!out.showLocation) out.locationCity = null;
+  return out;
+}
+
 // Izgradi osnovni filter (isti obrazac kao getPotentialMatches) —
-// isključi sebe/matches/blocked, age/gender/geo iz user.filters.
+// isključi sebe/matches/blocked/već lajkovane/odbijene, age/gender/geo iz user.filters.
 async function buildDiscoverBaseFilter(user, query) {
   const ageRange = user.filters?.ageRange || [18, 99];
   const min = Number(query.minAge) || ageRange[0] || 18;
@@ -449,6 +506,10 @@ async function buildDiscoverBaseFilter(user, query) {
     },
     birthDate: { $gte: minBirthDate, $lte: maxBirthDate },
   };
+
+  // Ne vraćaj osobe koje sam već lajkovao ili odbio
+  const likedByMe = await getLikedByMeIds(user._id);
+  filter._id.$nin.push(...likedByMe, ...(user.dislikes || []));
 
   const genderFilter = query.gender || user.filters?.gender;
   if (genderFilter === "male" || genderFilter === "female") {
@@ -527,50 +588,75 @@ exports.getDiscoverFeed = async (req, res) => {
       const recommended = scored.slice(0, DISCOVER_SECTION_LIMIT).map((s) => s.candidate);
       recommendedIds = recommended.map((c) => c._id);
 
-      // ── Same dating goals: equality filter, zadržava distance-sortiran redosled ──
+      // ── Same dating goals: isti cilj, distance-sortiran redosled,
+      // bez onih koji su već u "Recommended" sekciji ──
+      const recommendedSet = new Set(recommendedIds.map((id) => id.toString()));
       const sameGoals = user.relationshipType
         ? candidates
-            .filter((c) => c.relationshipType === user.relationshipType)
+            .filter(
+              (c) =>
+                c.relationshipType === user.relationshipType &&
+                !recommendedSet.has(c._id.toString())
+            )
             .slice(0, DISCOVER_SECTION_LIMIT)
         : [];
       sameGoalsIds = sameGoals.map((c) => c._id);
 
       generatedAt = new Date(now);
 
-      user.discoverBatchGeneratedAt = generatedAt;
-      user.discoverRecommendedIds = recommendedIds;
-      user.discoverSameGoalsIds = sameGoalsIds;
-      await user.save();
+      // updateOne umesto user.save(): ne pravi VersionError sa drugim upisima
+      await User.updateOne(
+        { _id: user._id },
+        {
+          $set: {
+            discoverBatchGeneratedAt: generatedAt,
+            discoverRecommendedIds: recommendedIds,
+            discoverSameGoalsIds: sameGoalsIds,
+          },
+        }
+      );
 
       return res.status(200).json({
         generatedAt: generatedAt.toISOString(),
         expiresAt: new Date(generatedAt.getTime() + DISCOVER_BATCH_WINDOW_MS).toISOString(),
-        recommended,
-        sameGoals,
+        recommended: recommended.map((c) => toDiscoverProfile(c)),
+        sameGoals: sameGoals.map((c) => toDiscoverProfile(c)),
       });
     }
 
     // ── Batch je svež — re-hydrate iz baze po sačuvanim ID-jevima ──
     console.log(`[DISCOVER] Koristim postojeći batch za korisnika ${user._id}`);
 
-    const [recommendedDocs, sameGoalsDocs] = await Promise.all([
-      User.find({ _id: { $in: recommendedIds } }).select(DISCOVER_SELECT_FIELDS).lean(),
-      User.find({ _id: { $in: sameGoalsIds } }).select(DISCOVER_SELECT_FIELDS).lean(),
+    // Osobe iz batch-a koje su u međuvremenu postale match ili blokirane ne prikazuj
+    const excluded = [...(user.matches || []), ...(user.blockedUsers || [])];
+
+    const [recommendedDocs, sameGoalsDocs, likedIds] = await Promise.all([
+      User.find({ _id: { $in: recommendedIds, $nin: excluded } })
+        .select(DISCOVER_SELECT_FIELDS)
+        .lean(),
+      User.find({ _id: { $in: sameGoalsIds, $nin: excluded } })
+        .select(DISCOVER_SELECT_FIELDS)
+        .lean(),
+      getLikedByMeIds(user._id, [...recommendedIds, ...sameGoalsIds]),
     ]);
 
-    // Zadrži originalan redosled iz sačuvanih ID-jeva (Mongo $in ne garantuje redosled).
-    const byId = (docs) => {
+    const likedSet = new Set(likedIds.map((id) => id.toString()));
+
+    // Zadrži originalan redosled iz sačuvanih ID-jeva (Mongo $in ne garantuje redosled)
+    // i označi koje sam već lajkovao.
+    const orderBy = (docs, ids) => {
       const map = new Map(docs.map((d) => [d._id.toString(), d]));
-      return (ids) => ids.map((id) => map.get(id.toString())).filter(Boolean);
+      return ids
+        .map((id) => map.get(id.toString()))
+        .filter(Boolean)
+        .map((d) => toDiscoverProfile(d, likedSet.has(d._id.toString())));
     };
-    const orderRecommended = byId(recommendedDocs);
-    const orderSameGoals = byId(sameGoalsDocs);
 
     return res.status(200).json({
       generatedAt: generatedAt.toISOString(),
       expiresAt: new Date(generatedAt.getTime() + DISCOVER_BATCH_WINDOW_MS).toISOString(),
-      recommended: orderRecommended(recommendedIds),
-      sameGoals: orderSameGoals(sameGoalsIds),
+      recommended: orderBy(recommendedDocs, recommendedIds),
+      sameGoals: orderBy(sameGoalsDocs, sameGoalsIds),
     });
   } catch (error) {
     console.error("[Controller] GET DISCOVER FEED - Error:", error);
@@ -585,11 +671,31 @@ exports.swipeAction = async (req, res) => {
   try {
     const { targetUserId, action } = req.body;
 
+    // Validacija ulaza (nevalidan id bi inače završio kao 500 CastError)
+    if (!mongoose.Types.ObjectId.isValid(targetUserId)) {
+      return res.status(400).json({ message: "Nevalidan korisnik" });
+    }
+    if (!["like", "superlike", "dislike"].includes(action)) {
+      return res.status(400).json({ message: "Nepoznata akcija" });
+    }
+
     const user = await User.findById(req.user.id);
     const targetUser = await User.findById(targetUserId);
 
     if (!user || !targetUser) {
       return res.status(404).json({ message: "Korisnik nije pronađen" });
+    }
+
+    if (user._id.equals(targetUser._id)) {
+      return res.status(400).json({ message: "Ne možeš swipe-ovati samog sebe." });
+    }
+
+    // Blokirani (u bilo kom smeru) ne mogu da se lajkuju
+    const blockedEitherWay =
+      (user.blockedUsers || []).some((id) => id.equals(targetUser._id)) ||
+      (targetUser.blockedUsers || []).some((id) => id.equals(user._id));
+    if (blockedEitherWay) {
+      return res.status(403).json({ code: "BLOCKED" });
     }
 
     console.log("➡️ SWIPE ACTION", {
@@ -605,6 +711,33 @@ exports.swipeAction = async (req, res) => {
       console.log(
         `${isSuperLike ? "⭐ SUPER LIKE" : "❤️ LIKE"}: ${user._id} lajkuje ${targetUser._id}`
       );
+
+      // Već su match: nema novih upisa ni notifikacija, samo vrati postojeći razgovor.
+      // (Bez ovoga, ponovni lajk posle match-a vrati lajk u target.likes i opet šalje push.)
+      if ((user.matches || []).some((id) => id.equals(targetUser._id))) {
+        const existing = await Conversation.findOne({
+          "participants.user": { $all: [user._id, targetUser._id] },
+        })
+          .select("_id")
+          .lean();
+
+        return res.json({
+          match: true,
+          alreadyMatched: true,
+          conversationId: existing ? existing._id.toString() : null,
+          matchedUser: {
+            _id: targetUser._id,
+            fullName: targetUser.fullName,
+            avatar: targetUser.avatar,
+          },
+        });
+      }
+
+      // Već lajkovano (običan like): idempotentno, bez novog push-a i socket događaja
+      const alreadyLiked = (targetUser.likes || []).some((id) => id.equals(user._id));
+      if (alreadyLiked && !isSuperLike) {
+        return res.json({ match: false, alreadyLiked: true, message: "Like sačuvan" });
+      }
 
       let superLikeInfo = null;
 
@@ -660,16 +793,7 @@ exports.swipeAction = async (req, res) => {
 
         let conversationId = null;
         try {
-          let conversation = await Conversation.findOne({
-            "participants.user": { $all: [user._id, targetUser._id] },
-          });
-
-          if (!conversation) {
-            console.log("💬 Kreiram novu konverzaciju za match");
-            conversation = await Conversation.create({
-              participants: [{ user: user._id }, { user: targetUser._id }],
-            });
-          }
+          const conversation = await getOrCreateConversation(user._id, targetUser._id);
           conversationId = conversation._id.toString();
         } catch (e) {
           console.error("❌ conversation error:", e);
@@ -681,25 +805,26 @@ exports.swipeAction = async (req, res) => {
         await user.save();
         await targetUser.save();
 
-        const targetSockets = global.onlineUsers.get(targetUser._id.toString());
-        if (targetSockets) {
-          targetSockets.forEach((sid) => {
-            global.io.to(sid).emit("match", {
-              userId: user._id,
-              fullName: user.fullName,
-              avatar: user.avatar,
-              birthDate: user.birthDate,
+        // Socket i push su "best effort": greška ovde ne sme da vrati 500 posle upisanog match-a
+        await safely("match socket", async () => {
+          const targetSockets = global.onlineUsers?.get(targetUser._id.toString());
+          if (targetSockets) {
+            targetSockets.forEach((sid) => {
+              global.io.to(sid).emit("match", {
+                userId: user._id,
+                fullName: user.fullName,
+                avatar: user.avatar,
+                birthDate: user.birthDate,
+              });
             });
-          });
-        }
+          }
+        });
 
         if (targetUser.fcmToken) {
           console.log("📲 SENDING MATCH NOTIFICATION TO:", targetUser.fullName);
 
-          await sendMatchNotification(
-            targetUser,
-            user,
-            conversationId
+          await safely("match push", () =>
+            sendMatchNotification(targetUser, user, conversationId)
           );
         }
 
@@ -740,30 +865,32 @@ exports.swipeAction = async (req, res) => {
       );
 
       // 🔔 SOCKET: Javi drugoj osobi da je dobila lajk
-      const targetSockets = global.onlineUsers.get(targetUser._id.toString());
-      if (targetSockets) {
-        const likePayload = {
-          fromUserId: user._id,
-          fullName: user.fullName,
-          avatar: user.avatar,
-          birthDate: user.birthDate,
-        };
+      await safely("like socket", async () => {
+        const targetSockets = global.onlineUsers?.get(targetUser._id.toString());
+        if (targetSockets) {
+          const likePayload = {
+            fromUserId: user._id,
+            fullName: user.fullName,
+            avatar: user.avatar,
+            birthDate: user.birthDate,
+          };
 
-        targetSockets.forEach((sid) => {
-          // likeReceived ostaje za sve (da se lista lajkova osveži kao i do sada)
-          global.io.to(sid).emit("likeReceived", likePayload);
+          targetSockets.forEach((sid) => {
+            // likeReceived ostaje za sve (da se lista lajkova osveži kao i do sada)
+            global.io.to(sid).emit("likeReceived", likePayload);
 
-          // Dodatni događaj samo za Super Like (globalna kartica u aplikaciji)
-          if (isSuperLike) {
-            global.io.to(sid).emit("superLikeReceived", likePayload);
-          }
-        });
-      }
+            // Dodatni događaj samo za Super Like (globalna kartica u aplikaciji)
+            if (isSuperLike) {
+              global.io.to(sid).emit("superLikeReceived", likePayload);
+            }
+          });
+        }
+      });
 
       // 🔔 PUSH NOTIFICATION
       if (targetUser.fcmToken) {
         console.log("📲 SENDING LIKE NOTIFICATION TO:", targetUser.fullName);
-        await sendLikeNotification(targetUser, user);
+        await safely("like push", () => sendLikeNotification(targetUser, user));
       }
 
       return res.json({
@@ -1368,6 +1495,41 @@ exports.createMatchAndNotify = async (userId1, userId2) => {
   }
 };
 
+// ================= APPLY BLOCK (zajednička logika) =================
+// Koriste je blockUser i reportUser, da prijava ostavi isto stanje kao običan blok.
+async function applyBlock(currentUserId, targetUserId) {
+  await User.findByIdAndUpdate(currentUserId, {
+    $addToSet: { blockedUsers: targetUserId },
+  });
+
+  const conversation = await Conversation.findOne({
+    "participants.user": { $all: [currentUserId, targetUserId] },
+  });
+
+  if (conversation) {
+    await Message.deleteMany({ conversationId: conversation._id });
+    await Conversation.findByIdAndDelete(conversation._id);
+  }
+
+  await User.updateOne(
+    { _id: currentUserId },
+    { $pull: { matches: targetUserId } }
+  );
+  await User.updateOne(
+    { _id: targetUserId },
+    { $pull: { matches: currentUserId } }
+  );
+
+  const targetSockets = global.onlineUsers?.get(targetUserId.toString());
+  if (targetSockets && conversation) {
+    targetSockets.forEach((sid) => {
+      global.io.to(sid).emit('conversationRemoved', {
+        conversationId: conversation._id.toString(),
+      });
+    });
+  }
+}
+
 // ================= BLOCK USER =================
 exports.blockUser = async (req, res) => {
   const currentUserId = req.user.id;
@@ -1378,36 +1540,7 @@ exports.blockUser = async (req, res) => {
       return res.status(400).json({ message: "Ne možete blokirati sami sebe." });
     }
 
-    await User.findByIdAndUpdate(currentUserId, {
-      $addToSet: { blockedUsers: targetUserId }
-    });
-
-    const conversation = await Conversation.findOne({
-      "participants.user": { $all: [currentUserId, targetUserId] }
-    });
-
-    if (conversation) {
-      await Message.deleteMany({ conversationId: conversation._id });
-      await Conversation.findByIdAndDelete(conversation._id);
-    }
-
-    await User.updateOne(
-      { _id: currentUserId },
-      { $pull: { matches: targetUserId } }
-    );
-    await User.updateOne(
-      { _id: targetUserId },
-      { $pull: { matches: currentUserId } }
-    );
-
-    const targetSockets = global.onlineUsers?.get(targetUserId.toString());
-    if (targetSockets && conversation) {
-      targetSockets.forEach((sid) => {
-        global.io.to(sid).emit('conversationRemoved', {
-          conversationId: conversation._id.toString(),
-        });
-      });
-    }
+    await applyBlock(currentUserId, targetUserId);
 
     res.status(200).json({ success: true, message: "Korisnik je uspešno blokiran." });
   } catch (error) {
@@ -1457,23 +1590,52 @@ exports.getBlockedUsers = async (req, res) => {
 };
 
 // ================= REPORT USER =================
+// Čuva prijavu, automatski blokira prijavljenu osobu i šalje mejl timu.
 exports.reportUser = async (req, res) => {
   try {
     const reporterId = req.user.id;
     const { userId: reportedUserId } = req.params;
     const { reason } = req.body;
-
+   console.log("[REPORT] Zahtev stigao:", { reporterId, reportedUserId, reason });
     if (reporterId === reportedUserId) {
       return res.status(400).json({ message: "Ne možeš prijaviti sam sebe." });
     }
 
+    // Ne veruj tekstu sa klijenta: samo poznati razlozi
+    const cleanReason = REPORT_REASONS.includes(reason) ? reason : "Other";
+
+    const [reporter, reported] = await Promise.all([
+      User.findById(reporterId).select("fullName email"),
+      User.findById(reportedUserId).select("fullName email"),
+    ]);
+    if (!reporter || !reported) {
+      return res.status(404).json({ message: "Korisnik nije pronađen." });
+    }
+
+    // 1) sačuvaj prijavu
     await Report.create({
       reporter: reporterId,
       reportedUser: reportedUserId,
-      reason: reason || null,
+      reason: cleanReason,
     });
 
-    res.status(200).json({ success: true, message: "Prijava je poslata." });
+    // 2) automatski blokiraj (ista logika kao običan blok)
+    let blocked = true;
+    try {
+      await applyBlock(reporterId, reportedUserId);
+    } catch (err) {
+      blocked = false;
+      console.error("[REPORT] Auto-block failed:", err.message);
+    }
+
+    // 3) mejl timu: ako ne uspe, prijava i dalje prolazi
+    try {
+      await sendReportEmail({ reporter, reported, reason: cleanReason });
+    } catch (err) {
+      console.error("[REPORT] Email failed:", err.message);
+    }
+
+    res.status(200).json({ success: true, blocked, message: "Prijava je poslata." });
   } catch (error) {
     console.error("[Controller] REPORT USER - Error:", error);
     res.status(500).json({ message: "Server error" });

@@ -31,10 +31,6 @@ const isAdult = (birthDate) => {
 const randomUsername = () => `user_${crypto.randomBytes(4).toString("hex")}`;
 
 // Registracija korisnika (email + lozinka, ili telefon potvrđen SMS kodom)
-//
-// Telefon se NE prima iz tela zahteva. Klijent dobija phoneToken od
-// POST /api/auth/verify-code (kad je kod tačan, a broj nema nalog) i šalje ga ovde.
-// Broj se uzima iz tokena koji je potpisao server, pa ga niko ne može lažirati.
 exports.register = async (req, res) => {
   try {
     const { fullName, username, birthDate, email, password, gender, phoneToken } = req.body;
@@ -90,7 +86,6 @@ exports.register = async (req, res) => {
     // Lozinka samo za email registraciju (kod telefona je nema)
     const hashedPassword = normalizedEmail ? await bcrypt.hash(password, 10) : undefined;
 
-    // undefined (ne null) za polja koja nisu poslata, da jedinstveni indeksi ne prave duplikate
     const newUser = new User({
       fullName,
       username: username || randomUsername(),
@@ -118,7 +113,6 @@ exports.register = async (req, res) => {
       token,
     });
   } catch (error) {
-    // 11000: duplikat jedinstvenog polja (npr. dve istovremene registracije)
     if (error?.code === 11000) {
       const field = Object.keys(error.keyPattern || {})[0];
       const messages = {
@@ -142,12 +136,10 @@ exports.login = async (req, res) => {
 
     const user = await User.findOne({ email: email?.trim().toLowerCase() });
 
-    // Ista poruka za nepostojeći nalog i pogrešnu lozinku
     if (!user) {
       return res.status(400).json({ message: "Invalid email or password" });
     }
 
-    // Nalog bez lozinke (Google ili telefon)
     if (!user.password) {
       return res.status(400).json({
         message: "This account doesn't use a password. Log in with Google or your phone number.",
@@ -180,7 +172,6 @@ exports.login = async (req, res) => {
 exports.googleLogin = async (req, res) => {
   const { token } = req.body;
 
-  // 1. Provera Google tokena: greška ovde je 401
   let payload;
   try {
     const ticket = await client.verifyIdToken({
@@ -193,7 +184,6 @@ exports.googleLogin = async (req, res) => {
     return res.status(401).json({ message: "Google authentication failed" });
   }
 
-  // Ne spajamo naloge po emailu koji Google nije potvrdio
   if (!payload?.email || !payload.email_verified) {
     return res.status(401).json({ message: "Your Google email is not verified" });
   }
@@ -229,7 +219,6 @@ exports.googleLogin = async (req, res) => {
       token: jwtToken,
     });
   } catch (error) {
-    // Greške baze su 500, a ne "Google authentication failed"
     console.error("❌ Google login greška (baza):", error);
     res.status(500).json({ message: "Internal server error" });
   }
@@ -241,13 +230,13 @@ exports.logout = (req, res) => {
   res.status(200).json({ message: "Logged out successfully" });
 };
 
-// Reset password redirect (HTTP → deep link)
+// Reset password redirect (preusmerava sa HTTP linka na aplikaciju)
 exports.resetPasswordRedirect = (req, res) => {
   const { userId, token } = req.query;
   console.log("🔗 resetPasswordRedirect pozvan:", { userId, token: token?.substring(0, 20) + "..." });
 
-  const safeUserId = encodeURIComponent(userId || '');
-  const safeToken = encodeURIComponent(token || '');
+  const safeUserId = encodeURIComponent(userId || "");
+  const safeToken = encodeURIComponent(token || "");
 
   const scheme = "vibra-date";
   const androidPackage = "com.marko353.vibradate";
@@ -263,15 +252,16 @@ exports.resetPasswordRedirect = (req, res) => {
   res.send(`
     <html>
       <head>
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
         <style>
           body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; text-align: center; padding: 40px; background: #0F0F12; color: #FFFFFF; }
-          a { color: #E91E63; font-weight: bold; text-decoration: none; }
-          .container { max-width: 400px; margin: 40px auto; padding: 24px; background: #1C1C22; border-radius: 16px; border: 1px solid #2C2C35; }
+          a { color: #FF2A85; font-weight: bold; text-decoration: none; }
+          .container { max-width: 400px; margin: 40px auto; padding: 24px; background: #18181F; border-radius: 20px; border: 1px solid #2B2B36; }
         </style>
       </head>
       <body>
         <div class="container">
-          <h2 style="color: #E91E63; margin-bottom: 8px;">VibrA</h2>
+          <h2 style="color: #FF2A85; margin-bottom: 8px;">VibrA</h2>
           <p>Opening VibrA app...</p>
           <p style="font-size: 13px; color: #A0A0AB;">If the app doesn't open automatically, <a id="fallbackLink" href="${plainDeepLink}">click here</a>.</p>
         </div>
@@ -306,6 +296,7 @@ exports.forgotPassword = async (req, res) => {
     const secret = process.env.JWT_SECRET + user.password;
     const token = jwt.sign({ id: user._id }, secret, { expiresIn: "15m" });
 
+    // Server URL koji će biti 100% klikabilan u svakom mejl klijentu
     const baseUrl = process.env.BASE_URL || "http://192.168.1.6:5000";
     const resetLink = `${baseUrl}/api/auth/reset-password-redirect?userId=${user._id}&token=${token}`;
 
@@ -353,10 +344,12 @@ exports.forgotPassword = async (req, res) => {
                 <tr>
                   <td align="center" style="padding-bottom: 24px;">
                     <p style="margin: 0 0 8px 0; font-size: 12px; color: #6E6E7A;">
-                      If the button doesn't work, copy and paste this link into your mobile browser:
+                      If the button doesn't work, copy and paste this link into your browser:
                     </p>
-                    <p style="margin: 0; word-break: break-all; font-size: 11px; color: #FF2A85; line-height: 16px;">
-                      ${resetLink}
+                    <p style="margin: 0; word-break: break-all; font-size: 11px; line-height: 16px;">
+                      <a href="${resetLink}" target="_blank" style="color: #FF2A85; text-decoration: underline;">
+                        ${resetLink}
+                      </a>
                     </p>
                   </td>
                 </tr>

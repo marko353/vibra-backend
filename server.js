@@ -33,6 +33,7 @@ global.onlineUsers = onlineUsers;
 // ================= MIDDLEWARE =================
 app.use(cors());
 app.use(express.json());
+app.get("/health", (req, res) => res.send("ok"));
 
 // ================= MONGODB =================
 mongoose

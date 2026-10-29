@@ -11,8 +11,6 @@ const authMiddleware = (req, res, next) => {
   }
 
   try {
-    // ✨ DODATO: Logujemo tajni ključ koji se koristi za PROVERU tokena
-    console.log("--- PROVERA TOKENA --- JWT_SECRET:", process.env.JWT_SECRET);
 
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
     req.user = decoded;

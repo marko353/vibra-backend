@@ -1,14 +1,10 @@
+require("dotenv").config();
 const cloudinary = require("cloudinary").v2;
 
-// Provera da li su vrednosti iz .env učitane
-
-
 cloudinary.config({
-  cloud_name: "dbkmpicfq",
-  api_key:"721657296157376",
-  api_secret:"tMMvTED93VDqw996EYCQDgKux2c",
+  cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+  api_key: process.env.CLOUDINARY_API_KEY,
+  api_secret: process.env.CLOUDINARY_API_SECRET,
 });
 
 module.exports = cloudinary;
-
-

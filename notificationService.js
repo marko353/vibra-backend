@@ -1,6 +1,12 @@
 const admin = require('firebase-admin');
-const serviceAccount = require('./firebase-service-account.json');
+const fs = require('fs');
 const User = require('./models/User');
+
+// Na Renderu je Secret File u /etc/secrets/, lokalno je u folderu projekta
+const serviceAccountPath = fs.existsSync('/etc/secrets/firebase-service-account.json')
+  ? '/etc/secrets/firebase-service-account.json'
+  : './firebase-service-account.json';
+const serviceAccount = require(serviceAccountPath);
 
 admin.initializeApp({
   credential: admin.credential.cert(serviceAccount),

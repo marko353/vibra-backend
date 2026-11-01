@@ -1,37 +1,46 @@
-require('dotenv').config();
-const nodemailer = require("nodemailer");
+// Slanje mejla preko Brevo HTTPS API-ja (Render blokira odlazni SMTP).
+// Potrebne promenljive okruženja na Render-u: BREVO_API_KEY i MAIL_FROM.
+// Zahteva Node 18+ (ugrađen fetch).
 
-const sendEmail = async ({ to, subject, text, html }) => {
-  console.log("📧 Priprema za slanje mejla...");
-  console.log(`➡️ Primaoci: ${to}`);
-  console.log(`➡️ Naslov: ${subject}`);
-  if (html) {
-    console.log("➡️ Koristi se HTML sadržaj");
-  } else {
-    console.log(`➡️ Tekst: ${text}`);
+const sendEmail = async ({ to, subject, html }) => {
+  const apiKey = process.env.BREVO_API_KEY;
+  const from = process.env.MAIL_FROM;
+
+  if (!apiKey || !from) {
+    throw new Error("BREVO_API_KEY ili MAIL_FROM nije podešen");
   }
 
-  const transporter = nodemailer.createTransport({
-    service: 'gmail',
-    auth: {
-      user: process.env.EMAIL_USER,     // tvoj gmail
-      pass: process.env.EMAIL_PASS,     // app password od 16 karaktera
-    },
-  });
+  // Prekid posle 15 s, da zahtev nikad ne visi beskonačno
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 15000);
 
   try {
-    const info = await transporter.sendMail({
-      from: `"VibrA" <${process.env.EMAIL_USER}>`,
-      to,
-      subject,
-      text: html ? undefined : text, // koristi text samo ako nema html
-      html, // ako postoji html, koristi njega
+    console.log("📧 Priprema za slanje mejla (Brevo):", to);
+
+    const res = await fetch("https://api.brevo.com/v3/smtp/email", {
+      method: "POST",
+      headers: {
+        "api-key": apiKey,
+        "Content-Type": "application/json",
+        accept: "application/json",
+      },
+      body: JSON.stringify({
+        sender: { name: "VibrA", email: from },
+        to: [{ email: to }],
+        subject,
+        htmlContent: html,
+      }),
+      signal: controller.signal,
     });
-    console.log("✅ Mejl uspešno poslat!");
-    console.log("Info:", info);
-  } catch (error) {
-    console.error("❌ Greška pri slanju mejla:", error);
-    throw error;
+
+    if (!res.ok) {
+      const text = await res.text();
+      throw new Error(`Brevo greška ${res.status}: ${text}`);
+    }
+
+    console.log("✅ Mejl poslat:", to);
+  } finally {
+    clearTimeout(timeout);
   }
 };
 

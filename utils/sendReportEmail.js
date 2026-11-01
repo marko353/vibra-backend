@@ -1,37 +1,17 @@
 /**
- * Slanje mejla timu kad neko prijavi korisnika (Node + Express + nodemailer).
+ * Slanje mejla timu kad neko prijavi korisnika.
  *
- * Mejl se UVEK šalje sa servera, nikad iz aplikacije
- * (lozinka za slanje ne sme da bude u mobilnoj aplikaciji).
+ * Mejl se UVEK šalje sa servera, nikad iz aplikacije.
+ * Koristi zajednički helper ../sendEmail (Brevo HTTPS API), jer Render
+ * blokira odlazni SMTP.
  *
- * .env na backendu (NE u Expo .env):
- *   REPORT_EMAIL_TO=support.vibradating@gmail.com
- *   SMTP_HOST=smtp.gmail.com
- *   SMTP_PORT=465
- *   SMTP_USER=adresa.sa.koje.saljes@gmail.com
- *   SMTP_PASS=app-lozinka-od-16-karaktera
- *
- * Za Gmail: uključi 2-step verification, pa napravi "App password"
- * (Google nalog → Security → App passwords). Obična lozinka ne radi.
- * Za više od par prijava dnevno bolje je koristiti servis za slanje
- * (Resend, Brevo, SendGrid...), isti kod, menjaju se samo SMTP podaci.
+ * Promenljive okruženja na Render-u:
+ *   REPORT_EMAIL_TO  (kome stiže prijava; ako fali, koristi se podrazumevana adresa)
+ *   BREVO_API_KEY    (koristi ga sendEmail)
+ *   MAIL_FROM        (koristi ga sendEmail, verifikovan pošiljalac u Brevo-u)
  */
 
-const nodemailer = require("nodemailer");
-
-const transporter = nodemailer.createTransport({
-  host: process.env.SMTP_HOST,
-  port: Number(process.env.SMTP_PORT || 465),
-  secure: Number(process.env.SMTP_PORT || 465) === 465,
-  auth: {
-    user: process.env.SMTP_USER,
-    pass: process.env.SMTP_PASS,
-  },
-  // Da prijava ne visi ako SMTP ne odgovara
-  connectionTimeout: 8000,
-  greetingTimeout: 8000,
-  socketTimeout: 10000,
-});
+const sendEmail = require("../sendEmail");
 
 const esc = (v) =>
   String(v ?? "")
@@ -70,16 +50,7 @@ async function sendReportEmail({ reporter, reported, reason }) {
     </p>
   `;
 
-  await transporter.sendMail({
-    from: `"Vibra Reports" <${process.env.SMTP_USER}>`,
-    to,
-    subject,
-    html,
-    text:
-      `New report\nReason: ${reason || "not provided"}\n` +
-      `Reported: ${reported.fullName} (${reported._id})\n` +
-      `Reporter: ${reporter.fullName} (${reporter._id})`,
-  });
+  await sendEmail({ to, subject, html });
 }
 
 module.exports = { sendReportEmail };

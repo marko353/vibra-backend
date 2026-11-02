@@ -11,6 +11,7 @@
 // Razvojni režim: ako TWILIO_VERIFY_SERVICE_SID nije podešen, a NODE_ENV nije
 // "production", SMS se ne šalje i važi fiksni kod 123456, da možeš da testiraš
 // tok bez Twilio naloga. U produkciji se ovo nikad ne uključuje.
+console.log("NODE_ENV =", process.env.NODE_ENV);
 
 const DEV_CODE = "123456";
 

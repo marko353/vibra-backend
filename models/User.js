@@ -103,6 +103,7 @@ const UserSchema = new Schema(
     discoverBatchGeneratedAt: { type: Date, default: null },
     discoverRecommendedIds: [{ type: Schema.Types.ObjectId, ref: "User" }],
     discoverSameGoalsIds: [{ type: Schema.Types.ObjectId, ref: "User" }],
+    discoverNewIds: [{ type: Schema.Types.ObjectId, ref: "User" }],
 
     // Tokeni i timestampovi
     resetPasswordToken: { type: String },

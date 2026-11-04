@@ -437,7 +437,9 @@ exports.getPotentialMatches = async (req, res) => {
 // ========================================================================
 
 const DISCOVER_BATCH_WINDOW_MS = 24 * 60 * 60 * 1000;
-const DISCOVER_SECTION_LIMIT = 3; // frontend prikazuje najviše 3 po sekciji
+const DISCOVER_SECTION_LIMIT = 3; // Recommended i Same dating goals: najviše 3
+const DISCOVER_NEW_LIMIT = 2; // New to VibrA: najviše 2
+const DISCOVER_NEW_WINDOW_MS = 7 * 24 * 60 * 60 * 1000; // "novi" = zadnjih 7 dana
 const DISCOVER_CANDIDATE_POOL_SIZE = 60; // koliko kandidata povlačimo pre scoring-a
 
 // Polja koja vraćamo za svaki profil u Discover odgovoru.
@@ -555,10 +557,13 @@ exports.getDiscoverFeed = async (req, res) => {
     const batchIsFresh =
       batchGeneratedAt &&
       now - batchGeneratedAt < DISCOVER_BATCH_WINDOW_MS &&
-      (user.discoverRecommendedIds?.length > 0 || user.discoverSameGoalsIds?.length > 0);
+      (user.discoverRecommendedIds?.length > 0 ||
+        user.discoverSameGoalsIds?.length > 0 ||
+        user.discoverNewIds?.length > 0);
 
     let recommendedIds = user.discoverRecommendedIds || [];
     let sameGoalsIds = user.discoverSameGoalsIds || [];
+    let newIds = user.discoverNewIds || [];
     let generatedAt = user.discoverBatchGeneratedAt;
 
     if (!batchIsFresh) {
@@ -602,6 +607,18 @@ exports.getDiscoverFeed = async (req, res) => {
         : [];
       sameGoalsIds = sameGoals.map((c) => c._id);
 
+      // ── New to VibrA: registrovani u zadnjih 7 dana, bez onih iz prve dve trake ──
+      const usedIds = [...recommendedIds, ...sameGoalsIds];
+      const newMembers = await User.find({
+        ...filter,
+        _id: { $nin: [...filter._id.$nin, ...usedIds] },
+        createdAt: { $gte: new Date(now - DISCOVER_NEW_WINDOW_MS) },
+      })
+        .select(DISCOVER_SELECT_FIELDS)
+        .limit(DISCOVER_NEW_LIMIT)
+        .lean();
+      newIds = newMembers.map((c) => c._id);
+
       generatedAt = new Date(now);
 
       // updateOne umesto user.save(): ne pravi VersionError sa drugim upisima
@@ -612,6 +629,7 @@ exports.getDiscoverFeed = async (req, res) => {
             discoverBatchGeneratedAt: generatedAt,
             discoverRecommendedIds: recommendedIds,
             discoverSameGoalsIds: sameGoalsIds,
+            discoverNewIds: newIds,
           },
         }
       );
@@ -621,23 +639,35 @@ exports.getDiscoverFeed = async (req, res) => {
         expiresAt: new Date(generatedAt.getTime() + DISCOVER_BATCH_WINDOW_MS).toISOString(),
         recommended: recommended.map((c) => toDiscoverProfile(c)),
         sameGoals: sameGoals.map((c) => toDiscoverProfile(c)),
+        newMembers: newMembers.map((c) => toDiscoverProfile(c)),
       });
     }
 
     // ── Batch je svež — re-hydrate iz baze po sačuvanim ID-jevima ──
     console.log(`[DISCOVER] Koristim postojeći batch za korisnika ${user._id}`);
 
-    // Osobe iz batch-a koje su u međuvremenu postale match ili blokirane ne prikazuj
-    const excluded = [...(user.matches || []), ...(user.blockedUsers || [])];
+    // Osobe iz batch-a koje su u međuvremenu postale match ili blokirane (u bilo kom
+    // smeru) ne prikazuj
+    const usersWhoBlockedMe = await User.find({ blockedUsers: user._id })
+      .select("_id")
+      .lean();
+    const excluded = [
+      ...(user.matches || []),
+      ...(user.blockedUsers || []),
+      ...usersWhoBlockedMe.map((u) => u._id),
+    ];
 
-    const [recommendedDocs, sameGoalsDocs, likedIds] = await Promise.all([
+    const [recommendedDocs, sameGoalsDocs, newDocs, likedIds] = await Promise.all([
       User.find({ _id: { $in: recommendedIds, $nin: excluded } })
         .select(DISCOVER_SELECT_FIELDS)
         .lean(),
       User.find({ _id: { $in: sameGoalsIds, $nin: excluded } })
         .select(DISCOVER_SELECT_FIELDS)
         .lean(),
-      getLikedByMeIds(user._id, [...recommendedIds, ...sameGoalsIds]),
+      User.find({ _id: { $in: newIds, $nin: excluded } })
+        .select(DISCOVER_SELECT_FIELDS)
+        .lean(),
+      getLikedByMeIds(user._id, [...recommendedIds, ...sameGoalsIds, ...newIds]),
     ]);
 
     const likedSet = new Set(likedIds.map((id) => id.toString()));
@@ -657,6 +687,7 @@ exports.getDiscoverFeed = async (req, res) => {
       expiresAt: new Date(generatedAt.getTime() + DISCOVER_BATCH_WINDOW_MS).toISOString(),
       recommended: orderBy(recommendedDocs, recommendedIds),
       sameGoals: orderBy(sameGoalsDocs, sameGoalsIds),
+      newMembers: orderBy(newDocs, newIds),
     });
   } catch (error) {
     console.error("[Controller] GET DISCOVER FEED - Error:", error);

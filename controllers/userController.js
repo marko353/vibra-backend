@@ -555,7 +555,7 @@ exports.getDiscoverFeed = async (req, res) => {
       : null;
 
     const batchIsFresh =
-      false &&
+      batchGeneratedAt &&
       now - batchGeneratedAt < DISCOVER_BATCH_WINDOW_MS &&
       (user.discoverRecommendedIds?.length > 0 ||
         user.discoverSameGoalsIds?.length > 0 ||
@@ -618,14 +618,6 @@ exports.getDiscoverFeed = async (req, res) => {
         .limit(DISCOVER_NEW_LIMIT)
         .lean();
       newIds = newMembers.map((c) => c._id);
-
-      // ▼▼▼ DODAJ OVO ▼▼▼
-      console.log(
-        `[DISCOVER] kandidata: ${candidates.length}, recommended: ${recommendedIds.length}, ` +
-        `sameGoals: ${sameGoalsIds.length}, new: ${newIds.length}, ` +
-        `moj relationshipType: ${user.relationshipType}`
-      );
-      // ▲▲▲ DODAJ OVO ▲▲▲
 
       generatedAt = new Date(now);
 

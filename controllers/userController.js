@@ -123,7 +123,9 @@ function applyGeoFilter(filter, geoFilter) {
   const { $geometry, $maxDistance } = geoFilter.$near;
   filter.$or = [
     { location: { $geoWithin: { $centerSphere: [$geometry.coordinates, $maxDistance / 6378100] } } },
-    { location: { $exists: false } },
+    // Bez validne lokacije: nema polja, null, prazan niz koordinata ili lažno [0, 0]
+    { "location.coordinates.0": { $exists: false } },
+    { "location.coordinates": [0, 0] },
   ];
   return true;
 }

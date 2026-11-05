@@ -369,6 +369,12 @@ exports.getPotentialMatches = async (req, res) => {
     if (!user) {
       return res.status(404).json({ message: "User not found" });
     }
+    // Ručni Refresh sa klijenta: odbijeni profili se vraćaju u igru
+if (req.query.refresh === "true" && (user.dislikes || []).length > 0) {
+  await User.updateOne({ _id: user._id }, { $set: { dislikes: [] } });
+  user.dislikes = [];
+  console.log("[POTENTIAL MATCHES] Dislike lista obrisana (refresh)");
+}
 
     const { minAge, maxAge, gender } = req.query;
     const min = Number(minAge) || 18;

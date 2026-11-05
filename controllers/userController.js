@@ -370,6 +370,14 @@ exports.getPotentialMatches = async (req, res) => {
       return res.status(404).json({ message: "User not found" });
     }
 
+    // Ručni Refresh sa klijenta: odbijeni profili se vraćaju u igru.
+    // Mora ići PRE gradnje filtera, da se obrisana lista ne koristi.
+    if (req.query.refresh === "true" && (user.dislikes || []).length > 0) {
+      await User.updateOne({ _id: user._id }, { $set: { dislikes: [] } });
+      user.dislikes = [];
+      console.log("[POTENTIAL MATCHES] Dislike lista obrisana (refresh)");
+    }
+
     const { minAge, maxAge, gender } = req.query;
     const min = Number(minAge) || 18;
     const max = Number(maxAge) || 99;
@@ -405,45 +413,33 @@ exports.getPotentialMatches = async (req, res) => {
       filter.gender = gender;
     }
 
-    // ───────────── DEBUG: koliko ljudi preživi posle svakog filtera ─────────────
-    const base = { _id: { $ne: user._id } };
-    console.log("[DBG] query:", JSON.stringify(req.query));
-    console.log("[DBG] moje koordinate:", JSON.stringify(user.location?.coordinates));
-    console.log(
-      "[DBG] liste -> likedByMe:", likedByMe.length,
-      "| dislikes:", (user.dislikes || []).length,
-      "| matches:", (user.matches || []).length,
-      "| blockedByMe:", blockedByMe.length,
-      "| blockedMe:", blockedMe.length
-    );
-    console.log("[DBG] 1) svi drugi korisnici:", await User.countDocuments(base));
-    console.log(
-      "[DBG] 2) + birthDate:",
-      await User.countDocuments({ ...base, birthDate: filter.birthDate })
-    );
-    console.log(
-      "[DBG] 3) + $nin liste:",
-      await User.countDocuments({ _id: filter._id, birthDate: filter.birthDate })
-    );
-    console.log("[DBG] 4) + gender:", await User.countDocuments(filter));
-    // ───────────────────────────────────────────────────────────────────────────
+    // Distanca: koordinate sa klijenta, a ako ih nema, tvoje sačuvane sa servera
+    const hasQueryCoords = req.query.latitude && req.query.longitude;
+    const userCoords = user.location?.coordinates;
+    const hasUserCoords =
+      Array.isArray(userCoords) && (userCoords[0] !== 0 || userCoords[1] !== 0);
 
-    if (req.query.maxDistance && req.query.latitude && req.query.longitude) {
+    if (req.query.maxDistance && (hasQueryCoords || hasUserCoords)) {
+      const lat = hasQueryCoords ? Number(req.query.latitude) : userCoords[1];
+      const lon = hasQueryCoords ? Number(req.query.longitude) : userCoords[0];
       const maxDistance = Number(req.query.maxDistance) * 1000 || 200000;
-      const lat = Number(req.query.latitude);
-      const lon = Number(req.query.longitude);
+
       filter.location = {
         $near: {
           $geometry: { type: "Point", coordinates: [lon, lat] },
-          $maxDistance: maxDistance
-        }
+          $maxDistance: maxDistance,
+        },
       };
-      console.log("[DBG] 5) geo filter uključen:", JSON.stringify(filter.location));
-    } else {
-      console.log("[DBG] 5) geo filter NIJE uključen (klijent nije poslao maxDistance/lat/lon)");
     }
 
-    console.log("[DBG] finalni filter:", JSON.stringify(filter));
+    // Kratak dijagnostički log (bez ispisa celog $nin)
+    console.log(
+      "[POTENTIAL MATCHES] refresh:", req.query.refresh === "true",
+      "| dislikes:", (user.dislikes || []).length,
+      "| likedByMe:", likedByMe.length,
+      "| matches:", (user.matches || []).length,
+      "| geo:", !!filter.location
+    );
 
     let potentialMatches = await User.find(filter)
       .select(`
@@ -489,7 +485,6 @@ exports.getPotentialMatches = async (req, res) => {
     res.status(500).json({ message: "Server error" });
   }
 };
-
 // ========================================================================
 
 // ========================================================================

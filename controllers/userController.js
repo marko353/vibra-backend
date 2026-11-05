@@ -130,14 +130,12 @@ exports.getAllUsers = async (req, res) => {
     }
 
     let users = await User.find(filter, "fullName profilePictures birthDate avatar location locationCity height relationshipType education jobTitle horoscope workout interests pets drinks smokes gender").lean();
-    console.log('[GET ALL USERS] Users before locationCity merge:', JSON.stringify(users, null, 2));
     users = users.map(user => {
       if (user.location && user.locationCity) {
         user.location.locationCity = user.locationCity;
       }
       return user;
     });
-    console.log('[GET ALL USERS] Users after locationCity merge:', JSON.stringify(users, null, 2));
     console.log('[GET ALL USERS] Users found:', users.length);
     res.status(200).json({ users });
   } catch (error) {
@@ -356,17 +354,23 @@ exports.getPotentialMatches = async (req, res) => {
       .lean();
     const blockedMe = usersWhoBlockedMe.map((u) => u._id.toString());
 
-    let filter = {
+    // Već lajkovani (npr. iz Discover-a) i odbijeni ne smeju ponovo u swipe
+    const likedByMe = await getLikedByMeIds(user._id);
+
+    const filter = {
       _id: {
         $nin: [
           user._id,
           ...(user.matches || []),
           ...blockedByMe,
           ...blockedMe,
+          ...likedByMe,
+          ...(user.dislikes || []),
         ],
       },
       birthDate: { $gte: minBirthDate, $lte: maxBirthDate },
     };
+
     if (gender === 'male' || gender === 'female') {
       filter.gender = gender;
     }
@@ -381,10 +385,7 @@ exports.getPotentialMatches = async (req, res) => {
           $maxDistance: maxDistance
         }
       };
-      console.log('[POTENTIAL MATCHES] Geo filter:', JSON.stringify(filter.location, null, 2));
     }
-
-    console.log('[POTENTIAL MATCHES] Filter:', JSON.stringify(filter, null, 2));
 
     let potentialMatches = await User.find(filter)
       .select(`
@@ -416,15 +417,14 @@ exports.getPotentialMatches = async (req, res) => {
       `)
       .lean();
 
-    console.log('[POTENTIAL MATCHES] Users before locationCity merge:', JSON.stringify(potentialMatches, null, 2));
-    potentialMatches = potentialMatches.map(user => {
-      if (user.location && user.locationCity) {
-        user.location.locationCity = user.locationCity;
+    potentialMatches = potentialMatches.map(u => {
+      if (u.location && u.locationCity) {
+        u.location.locationCity = u.locationCity;
       }
-      return user;
+      return u;
     });
-    console.log('[POTENTIAL MATCHES] Users after locationCity merge:', JSON.stringify(potentialMatches, null, 2));
-    console.log('[POTENTIAL MATCHES] Broj nakon filtera (age/gender):', potentialMatches.length);
+
+    console.log('[POTENTIAL MATCHES] Broj nakon filtera:', potentialMatches.length);
     res.status(200).json({ users: potentialMatches });
   } catch (error) {
     console.error('[MATCHES] Error:', error);
@@ -646,14 +646,15 @@ exports.getDiscoverFeed = async (req, res) => {
     // ── Batch je svež — re-hydrate iz baze po sačuvanim ID-jevima ──
     console.log(`[DISCOVER] Koristim postojeći batch za korisnika ${user._id}`);
 
-    // Osobe iz batch-a koje su u međuvremenu postale match ili blokirane (u bilo kom
-    // smeru) ne prikazuj
+    // Osobe iz batch-a koje su u međuvremenu postale match, odbijene ili blokirane
+    // (u bilo kom smeru) ne prikazuj
     const usersWhoBlockedMe = await User.find({ blockedUsers: user._id })
       .select("_id")
       .lean();
     const excluded = [
       ...(user.matches || []),
       ...(user.blockedUsers || []),
+      ...(user.dislikes || []),
       ...usersWhoBlockedMe.map((u) => u._id),
     ];
 
@@ -1377,9 +1378,6 @@ exports.getIncomingLikes = async (req, res) => {
     });
 
     console.log('[INCOMING LIKES] Broj korisnika nakon filtera:', users.length);
-    if (users.length > 0) {
-      console.log('[INCOMING LIKES] Prvi korisnik:', users[0]);
-    }
     return res.json({ likes: users });
   } catch (err) {
     console.error('[INCOMING LIKES] Greška:', {
@@ -1401,6 +1399,13 @@ exports.saveUserFilters = async (req, res) => {
     const user = await User.findById(userId);
     if (!user) return res.status(404).json({ message: 'User not found' });
     user.filters = filters;
+
+    // Novi filteri → Discover se regeneriše pri sledećem otvaranju
+    user.discoverBatchGeneratedAt = null;
+    user.discoverRecommendedIds = [];
+    user.discoverSameGoalsIds = [];
+    user.discoverNewIds = [];
+
     await user.save();
     console.log('[FILTERS] Sačuvani filteri za korisnika', userId, filters);
     res.json({ success: true, filters: user.filters });
@@ -1627,7 +1632,7 @@ exports.reportUser = async (req, res) => {
     const reporterId = req.user.id;
     const { userId: reportedUserId } = req.params;
     const { reason } = req.body;
-   console.log("[REPORT] Zahtev stigao:", { reporterId, reportedUserId, reason });
+    console.log("[REPORT] Zahtev stigao:", { reporterId, reportedUserId, reason });
     if (reporterId === reportedUserId) {
       return res.status(400).json({ message: "Ne možeš prijaviti sam sebe." });
     }

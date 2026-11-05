@@ -211,45 +211,49 @@ router.delete(
 
 /* ===================== LOCATION ===================== */
 router.patch('/update-location', authMiddleware, async (req, res) => {
-  const {
-    latitude,
-    longitude,
-    accuracy,
-    locationCity,
-    showLocation
-  } = req.body;
+  try {
+    const { latitude, longitude, locationCity, showLocation } = req.body;
 
-  const update = showLocation
-    ? {
-        location: {
-          latitude,
-          longitude,
-          accuracy,
-          locationCity
-        },
-        showLocation: true
-      }
-    : {
-        location: null,
-        showLocation: false
-      };
+    const lat = Number(latitude);
+    const lon = Number(longitude);
+    const hasCoords =
+      Number.isFinite(lat) && Number.isFinite(lon) && !(lat === 0 && lon === 0);
 
-  const user = await User.findByIdAndUpdate(
-    req.user.id,
-    update,
-    { new: true }
-  );
+    const update = { showLocation: !!showLocation };
 
-  if (!user) {
-    return res.status(404).json({
-      message: "Korisnik nije pronađen"
+    // Koordinate se čuvaju uvek (trebaju za distancu), a showLocation samo
+    // određuje da li se grad prikazuje drugima. GeoJSON: [longitude, latitude].
+    if (hasCoords) {
+      update.location = { type: 'Point', coordinates: [lon, lat] };
+    }
+    if (showLocation && locationCity) {
+      update.locationCity = locationCity;
+    }
+    if (!showLocation) {
+      update.locationCity = null;
+    }
+
+    const user = await User.findByIdAndUpdate(
+      req.user.id,
+      { $set: update },
+      { new: true }
+    );
+
+    if (!user) {
+      return res.status(404).json({
+        message: "Korisnik nije pronađen"
+      });
+    }
+
+    res.json({
+      location: user.location,
+      locationCity: user.locationCity,
+      showLocation: user.showLocation
     });
+  } catch (error) {
+    console.error('[UPDATE LOCATION] Error:', error);
+    res.status(500).json({ message: 'Server error' });
   }
-
-  res.json({
-    location: user.location,
-    showLocation: user.showLocation
-  });
 });
 
 /* ===================== POTENTIAL MATCHES ===================== */
@@ -272,11 +276,10 @@ router.put(
   authMiddleware,
   reorderProfilePictures
 );
-router.post('/swipe', authMiddleware, swipeAction);
-router.post('/swipe/undo', authMiddleware, undoSwipe);
 
 /* ===================== SWIPE ===================== */
 router.post('/swipe', authMiddleware, swipeAction);
+router.post('/swipe/undo', authMiddleware, undoSwipe);
 
 /* ===================== MESSAGES ===================== */
 router.post('/message', authMiddleware, postMessage);

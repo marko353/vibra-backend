@@ -122,6 +122,12 @@ const UserSchema = new Schema(
   }
 );
 
+// ========== INDEKSI (Discover i swipe) ==========
+UserSchema.index({ location: "2dsphere" }); // obavezno za $near
+UserSchema.index({ likes: 1 });             // getLikedByMeIds
+UserSchema.index({ blockedUsers: 1 });      // "ko je mene blokirao"
+UserSchema.index({ createdAt: -1 });        // "New to VibrA"
+
 // LOG: Pre cuvanja dokumenta (.save())
 UserSchema.pre("save", function (next) {
   console.log(`\n================== [MONGOOSE PRE-SAVE] ==================`);

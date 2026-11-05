@@ -461,7 +461,36 @@ exports.getPotentialMatches = async (req, res) => {
       await User.countDocuments({ _id: filter._id, birthDate: filter.birthDate })
     );
     console.log("[DBG] 4) + gender:", await User.countDocuments(filter));
+
+
+
+    // ↓↓↓ NOVO ↓↓↓
+const noGeo = { _id: filter._id, birthDate: filter.birthDate };
+const myCoords = user.location?.coordinates;
+console.log(
+  "[DBG] 4b) sa validnom lokacijom:",
+  await User.countDocuments({
+    ...noGeo,
+    "location.coordinates.0": { $exists: true },
+    "location.coordinates": { $ne: [0, 0] },
+  })
+);
+if (myCoords) {
+  console.log(
+    "[DBG] 4c) u radijusu:",
+    await User.countDocuments({
+      ...noGeo,
+      location: {
+        $geoWithin: {
+          $centerSphere: [myCoords, (Number(req.query.maxDistance) || 200) / 6378.1],
+        },
+      },
+    })
+  );
+}
+// ↑↑↑ NOVO ↑↑↑
     // ───────────────────────────────────────────────────────────────────────────
+
 
     // Geo filter: lat/lon iz query-ja, a ako ih klijent ne pošalje,
     // koristi se sačuvana lokacija korisnika.

@@ -60,15 +60,18 @@ const UserSchema = new Schema(
     education: { type: [String], default: [] },
 
     // Podaci o lokaciji
+    // VAŽNO: bez default-a za type i coordinates. Nalog koji nikad nije poslao
+    // lokaciju nema polje `location` (2dsphere indeks ga preskače), umesto da
+    // dobije lažnu vrednost [0, 0]. `default: undefined` sprečava da Mongoose
+    // sam upiše prazan niz, što bi 2dsphere indeks odbio.
     location: {
       type: {
         type: String,
-        enum: ['Point'],
-        default: 'Point'
+        enum: ['Point']
       },
       coordinates: {
         type: [Number], // [longitude, latitude]
-        default: [0, 0]
+        default: undefined
       }
     },
     locationCity: { type: String, default: null },
@@ -123,7 +126,7 @@ const UserSchema = new Schema(
 );
 
 // ========== INDEKSI (Discover i swipe) ==========
-UserSchema.index({ location: "2dsphere" }); // obavezno za $near
+UserSchema.index({ location: "2dsphere" }); // obavezno za $near / $geoWithin
 UserSchema.index({ likes: 1 });             // getLikedByMeIds
 UserSchema.index({ blockedUsers: 1 });      // "ko je mene blokirao"
 UserSchema.index({ createdAt: -1 });        // "New to VibrA"

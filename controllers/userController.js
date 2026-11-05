@@ -113,6 +113,21 @@ function buildGeoFilter(user, query, defaultDistanceKm = 200) {
   };
 }
 
+// Primeni geo filter na upit: profili u radijusu + profili bez poznate lokacije
+// (test nalozi, korisnici koji su odbili dozvolu). $near ne može u $or, pa se
+// koristi $geoWithin, što znači da rezultati nisu sortirani po udaljenosti.
+// Kad svi nalozi dobiju lokaciju, može se vratiti na strogi $near (buildGeoFilter).
+// Vraća true ako je filter primenjen.
+function applyGeoFilter(filter, geoFilter) {
+  if (!geoFilter) return false;
+  const { $geometry, $maxDistance } = geoFilter.$near;
+  filter.$or = [
+    { location: { $geoWithin: { $centerSphere: [$geometry.coordinates, $maxDistance / 6378100] } } },
+    { location: { $exists: false } },
+  ];
+  return true;
+}
+
 // ================= LOGIN =================
 exports.login = async (req, res) => {
   try {
@@ -462,42 +477,38 @@ exports.getPotentialMatches = async (req, res) => {
     );
     console.log("[DBG] 4) + gender:", await User.countDocuments(filter));
 
-
-
-    // ↓↓↓ NOVO ↓↓↓
-const noGeo = { _id: filter._id, birthDate: filter.birthDate };
-const myCoords = user.location?.coordinates;
-console.log(
-  "[DBG] 4b) sa validnom lokacijom:",
-  await User.countDocuments({
-    ...noGeo,
-    "location.coordinates.0": { $exists: true },
-    "location.coordinates": { $ne: [0, 0] },
-  })
-);
-if (myCoords) {
-  console.log(
-    "[DBG] 4c) u radijusu:",
-    await User.countDocuments({
-      ...noGeo,
-      location: {
-        $geoWithin: {
-          $centerSphere: [myCoords, (Number(req.query.maxDistance) || 200) / 6378.1],
-        },
-      },
-    })
-  );
-}
-// ↑↑↑ NOVO ↑↑↑
+    // Dijagnostika lokacija: koliko preostalih profila ima validnu lokaciju
+    // i koliko ih je u radijusu.
+    const noGeo = { _id: filter._id, birthDate: filter.birthDate };
+    const myCoords = user.location?.coordinates;
+    console.log(
+      "[DBG] 4b) sa validnom lokacijom:",
+      await User.countDocuments({
+        ...noGeo,
+        "location.coordinates.0": { $exists: true },
+        "location.coordinates": { $ne: [0, 0] },
+      })
+    );
+    if (myCoords) {
+      console.log(
+        "[DBG] 4c) u radijusu:",
+        await User.countDocuments({
+          ...noGeo,
+          location: {
+            $geoWithin: {
+              $centerSphere: [myCoords, (Number(req.query.maxDistance) || 200) / 6378.1],
+            },
+          },
+        })
+      );
+    }
     // ───────────────────────────────────────────────────────────────────────────
 
-
     // Geo filter: lat/lon iz query-ja, a ako ih klijent ne pošalje,
-    // koristi se sačuvana lokacija korisnika.
+    // koristi se sačuvana lokacija korisnika. Profili bez lokacije ostaju vidljivi.
     const geoFilter = buildGeoFilter(user, req.query);
-    if (geoFilter) {
-      filter.location = geoFilter;
-      console.log("[DBG] 5) geo filter uključen:", JSON.stringify(filter.location));
+    if (applyGeoFilter(filter, geoFilter)) {
+      console.log("[DBG] 5) geo filter uključen (sa profilima bez lokacije):", JSON.stringify(filter.$or));
     } else {
       console.log("[DBG] 5) geo filter NIJE uključen (nema maxDistance ili koordinata)");
     }
@@ -1445,10 +1456,7 @@ exports.getIncomingLikes = async (req, res) => {
     }
 
     // Geo filter: isti fallback na sačuvanu lokaciju kao u getPotentialMatches
-    const geoFilter = buildGeoFilter(user, req.query);
-    if (geoFilter) {
-      query.location = geoFilter;
-    }
+    applyGeoFilter(query, buildGeoFilter(user, req.query));
     console.log('[INCOMING LIKES] Query:', JSON.stringify(query, null, 2));
 
     let users = await User.find(query)

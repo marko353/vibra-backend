@@ -375,6 +375,29 @@ exports.getPotentialMatches = async (req, res) => {
       filter.gender = gender;
     }
 
+    // ───────────── DEBUG: koliko ljudi preživi posle svakog filtera ─────────────
+    const base = { _id: { $ne: user._id } };
+    console.log("[DBG] query:", JSON.stringify(req.query));
+    console.log("[DBG] moje koordinate:", JSON.stringify(user.location?.coordinates));
+    console.log(
+      "[DBG] liste -> likedByMe:", likedByMe.length,
+      "| dislikes:", (user.dislikes || []).length,
+      "| matches:", (user.matches || []).length,
+      "| blockedByMe:", blockedByMe.length,
+      "| blockedMe:", blockedMe.length
+    );
+    console.log("[DBG] 1) svi drugi korisnici:", await User.countDocuments(base));
+    console.log(
+      "[DBG] 2) + birthDate:",
+      await User.countDocuments({ ...base, birthDate: filter.birthDate })
+    );
+    console.log(
+      "[DBG] 3) + $nin liste:",
+      await User.countDocuments({ _id: filter._id, birthDate: filter.birthDate })
+    );
+    console.log("[DBG] 4) + gender:", await User.countDocuments(filter));
+    // ───────────────────────────────────────────────────────────────────────────
+
     if (req.query.maxDistance && req.query.latitude && req.query.longitude) {
       const maxDistance = Number(req.query.maxDistance) * 1000 || 200000;
       const lat = Number(req.query.latitude);
@@ -385,7 +408,12 @@ exports.getPotentialMatches = async (req, res) => {
           $maxDistance: maxDistance
         }
       };
+      console.log("[DBG] 5) geo filter uključen:", JSON.stringify(filter.location));
+    } else {
+      console.log("[DBG] 5) geo filter NIJE uključen (klijent nije poslao maxDistance/lat/lon)");
     }
+
+    console.log("[DBG] finalni filter:", JSON.stringify(filter));
 
     let potentialMatches = await User.find(filter)
       .select(`

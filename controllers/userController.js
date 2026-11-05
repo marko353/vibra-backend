@@ -85,6 +85,34 @@ async function getOrCreateConversation(userA, userB, participants) {
   return conversation;
 }
 
+// Izgradi $near geo filter.
+// Prioritet koordinata: lat/lon iz query-ja, pa sačuvana lokacija korisnika
+// (ako postoji i nije [0, 0]). Vraća null ako nema koordinata ili maxDistance.
+// maxDistance je u kilometrima.
+function buildGeoFilter(user, query, defaultDistanceKm = 200) {
+  const hasQueryCoords = query.latitude && query.longitude;
+  const userCoords = user?.location?.coordinates;
+  const hasUserCoords =
+    Array.isArray(userCoords) &&
+    userCoords.length === 2 &&
+    (userCoords[0] !== 0 || userCoords[1] !== 0);
+
+  if (!query.maxDistance || !(hasQueryCoords || hasUserCoords)) return null;
+
+  const lat = hasQueryCoords ? Number(query.latitude) : userCoords[1];
+  const lon = hasQueryCoords ? Number(query.longitude) : userCoords[0];
+  const distanceKm = Number(query.maxDistance) || defaultDistanceKm;
+
+  if (!Number.isFinite(lat) || !Number.isFinite(lon)) return null;
+
+  return {
+    $near: {
+      $geometry: { type: "Point", coordinates: [lon, lat] },
+      $maxDistance: distanceKm * 1000,
+    },
+  };
+}
+
 // ================= LOGIN =================
 exports.login = async (req, res) => {
   try {
@@ -197,6 +225,7 @@ exports.updateProfile = async (req, res) => {
       return res.status(400).json({ message: 'Pol može biti samo "male", "female" ili "other".' });
     }
 
+    // Napomena: 'deleteAccount' je namerno uklonjen — brisanje naloga ima svoju rutu.
     const allowedUpdates = [
       'bio',
       'jobTitle',
@@ -219,7 +248,6 @@ exports.updateProfile = async (req, res) => {
       'languages',
       'interests',
       'notifications',
-      'deleteAccount',
     ];
 
     const finalUpdatePayload = {};
@@ -369,12 +397,13 @@ exports.getPotentialMatches = async (req, res) => {
     if (!user) {
       return res.status(404).json({ message: "User not found" });
     }
+
     // Ručni Refresh sa klijenta: odbijeni profili se vraćaju u igru
-if (req.query.refresh === "true" && (user.dislikes || []).length > 0) {
-  await User.updateOne({ _id: user._id }, { $set: { dislikes: [] } });
-  user.dislikes = [];
-  console.log("[POTENTIAL MATCHES] Dislike lista obrisana (refresh)");
-}
+    if (req.query.refresh === "true" && (user.dislikes || []).length > 0) {
+      await User.updateOne({ _id: user._id }, { $set: { dislikes: [] } });
+      user.dislikes = [];
+      console.log("[POTENTIAL MATCHES] Dislike lista obrisana (refresh)");
+    }
 
     const { minAge, maxAge, gender } = req.query;
     const min = Number(minAge) || 18;
@@ -434,19 +463,14 @@ if (req.query.refresh === "true" && (user.dislikes || []).length > 0) {
     console.log("[DBG] 4) + gender:", await User.countDocuments(filter));
     // ───────────────────────────────────────────────────────────────────────────
 
-    if (req.query.maxDistance && req.query.latitude && req.query.longitude) {
-      const maxDistance = Number(req.query.maxDistance) * 1000 || 200000;
-      const lat = Number(req.query.latitude);
-      const lon = Number(req.query.longitude);
-      filter.location = {
-        $near: {
-          $geometry: { type: "Point", coordinates: [lon, lat] },
-          $maxDistance: maxDistance
-        }
-      };
+    // Geo filter: lat/lon iz query-ja, a ako ih klijent ne pošalje,
+    // koristi se sačuvana lokacija korisnika.
+    const geoFilter = buildGeoFilter(user, req.query);
+    if (geoFilter) {
+      filter.location = geoFilter;
       console.log("[DBG] 5) geo filter uključen:", JSON.stringify(filter.location));
     } else {
-      console.log("[DBG] 5) geo filter NIJE uključen (klijent nije poslao maxDistance/lat/lon)");
+      console.log("[DBG] 5) geo filter NIJE uključen (nema maxDistance ili koordinata)");
     }
 
     console.log("[DBG] finalni filter:", JSON.stringify(filter));
@@ -1373,7 +1397,7 @@ exports.getIncomingLikes = async (req, res) => {
       (user.superLikedBy || []).filter(id => id).map(id => id.toString())
     );
 
-    const { minAge, maxAge, gender, latitude, longitude, maxDistance } = req.query;
+    const { minAge, maxAge, gender } = req.query;
     const min = Number(minAge) || 18;
     const max = Number(maxAge) || 99;
     const today = new Date();
@@ -1390,16 +1414,11 @@ exports.getIncomingLikes = async (req, res) => {
     if (gender === 'male' || gender === 'female') {
       query.gender = gender;
     }
-    if (latitude && longitude && maxDistance) {
-      query.location = {
-        $near: {
-          $geometry: {
-            type: "Point",
-            coordinates: [Number(longitude), Number(latitude)]
-          },
-          $maxDistance: Number(maxDistance) * 1000
-        }
-      };
+
+    // Geo filter: isti fallback na sačuvanu lokaciju kao u getPotentialMatches
+    const geoFilter = buildGeoFilter(user, req.query);
+    if (geoFilter) {
+      query.location = geoFilter;
     }
     console.log('[INCOMING LIKES] Query:', JSON.stringify(query, null, 2));
 
@@ -1548,6 +1567,9 @@ exports.unmatchUser = async (req, res) => {
   }
 };
 
+// ================= CREATE MATCH AND NOTIFY =================
+// Prima ID-jeve dva korisnika. Učitava korisnike, obezbeđuje konverzaciju
+// i šalje push obojici (best effort, jedan neuspeh ne ruši drugi).
 exports.createMatchAndNotify = async (userId1, userId2) => {
   try {
     const existingMatch = await Match.findOne({
@@ -1565,27 +1587,42 @@ exports.createMatchAndNotify = async (userId1, userId2) => {
     await Match.create({ user1: userId1, user2: userId2 });
     console.log(`[Controller] Match uspešno kreiran u bazi.`);
 
-    const notificationPromises = [
-      sendMatchNotification(
-        { fcmToken: userId1.fcmToken, _id: userId1 },
-        { fullName: userId2.fullName, avatar: userId2.avatar, _id: userId2 },
-        conversationId
-      ),
-      sendMatchNotification(
-        { fcmToken: userId2.fcmToken, _id: userId2 },
-        { fullName: userId1.fullName, avatar: userId1.avatar, _id: userId1 },
-        conversationId
-      )
-    ];
+    const [user1, user2] = await Promise.all([
+      User.findById(userId1),
+      User.findById(userId2),
+    ]);
 
-    const results = await Promise.allSettled(notificationPromises);
+    if (!user1 || !user2) {
+      console.warn('[Controller] createMatchAndNotify: jedan od korisnika nije pronađen, preskačem notifikacije.');
+      return;
+    }
+
+    let conversationId = null;
+    try {
+      const conversation = await getOrCreateConversation(user1._id, user2._id);
+      conversationId = conversation._id.toString();
+    } catch (e) {
+      console.error('[Controller] createMatchAndNotify conversation error:', e);
+    }
+
+    // [primalac, drugi korisnik]
+    const pairs = [
+      [user1, user2],
+      [user2, user1],
+    ].filter(([recipient]) => recipient.fcmToken);
+
+    const results = await Promise.allSettled(
+      pairs.map(([recipient, other]) =>
+        sendMatchNotification(recipient, other, conversationId)
+      )
+    );
 
     results.forEach((result, index) => {
-      const currentUserId = index === 0 ? userId1 : userId2;
+      const recipientId = pairs[index][0]._id;
       if (result.status === 'fulfilled') {
-        console.log(`[Controller] Notifikacija uspešno poslata korisniku: ${currentUserId}`);
+        console.log(`[Controller] Notifikacija uspešno poslata korisniku: ${recipientId}`);
       } else {
-        console.error(`[Controller] Slanje nije uspelo za ${currentUserId}:`, result.reason);
+        console.error(`[Controller] Slanje nije uspelo za ${recipientId}:`, result.reason);
       }
     });
 

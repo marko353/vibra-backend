@@ -234,8 +234,35 @@ exports.updateProfile = async (req, res) => {
       finalUpdatePayload.locationCity = updateData.locationCity;
     }
 
-    if (updateData.location && !updateData.locationCity) {
-      finalUpdatePayload.locationCity = 'Beograd';
+    // Klijent šalje { latitude, longitude, ... } (expo-location), a šema traži
+    // GeoJSON Point { type: "Point", coordinates: [lon, lat] }.
+    // Bez ovog pretvaranja Mongoose odbaci latitude/longitude i ostane [0, 0].
+    if (finalUpdatePayload.location) {
+      const loc = finalUpdatePayload.location;
+      const lat = Number(loc.latitude);
+      const lon = Number(loc.longitude);
+
+      if (Number.isFinite(lat) && Number.isFinite(lon) && !(lat === 0 && lon === 0)) {
+        finalUpdatePayload.location = { type: "Point", coordinates: [lon, lat] };
+
+        // Grad iz location objekta, ako nije poslat na vrhu zahteva
+        if (!finalUpdatePayload.locationCity && loc.locationCity) {
+          finalUpdatePayload.locationCity = loc.locationCity;
+        }
+      } else if (
+        Array.isArray(loc.coordinates) &&
+        loc.coordinates.length === 2 &&
+        loc.coordinates.every((n) => Number.isFinite(Number(n)))
+      ) {
+        // Već je GeoJSON
+        finalUpdatePayload.location = {
+          type: "Point",
+          coordinates: loc.coordinates.map(Number),
+        };
+      } else {
+        // Nevalidno: ne diraj postojeću lokaciju
+        delete finalUpdatePayload.location;
+      }
     }
 
     console.log('[UPDATE PROFILE] finalUpdatePayload:', JSON.stringify(finalUpdatePayload, null, 2));
@@ -262,6 +289,9 @@ exports.updateProfile = async (req, res) => {
     }
 
     console.log('[UPDATE PROFILE] Uspešno ažuriran korisnik:', updatedUser._id);
+    if (finalUpdatePayload.location) {
+      console.log('[UPDATE PROFILE] Nova lokacija:', JSON.stringify(updatedUser.location));
+    }
     if (finalUpdatePayload.notifications) {
       console.log('[UPDATE PROFILE] Nova notifications podešavanja:', JSON.stringify(updatedUser.notifications, null, 2));
     }

@@ -130,6 +130,45 @@ function applyGeoFilter(filter, geoFilter) {
   return true;
 }
 
+// ================= UDALJENOST IZMEĐU KORISNIKA =================
+// Koordinate su [longitude, latitude]. Validne su ako su konačni brojevi i nisu [0, 0].
+function isValidCoords(c) {
+  return (
+    Array.isArray(c) &&
+    c.length === 2 &&
+    c.every((n) => Number.isFinite(Number(n))) &&
+    !(Number(c[0]) === 0 && Number(c[1]) === 0)
+  );
+}
+
+// Udaljenost u km (zaokružena na ceo broj) ili null ako nema validnih koordinata.
+// Ispod 1 km vraća 0 (aplikacija prikazuje "manje od 1 km").
+// Haversine formula (vazdušna linija).
+function distanceBetween(myCoords, theirLocation) {
+  const theirCoords = theirLocation?.coordinates;
+  if (!isValidCoords(myCoords) || !isValidCoords(theirCoords)) return null;
+
+  const toRad = (d) => (Number(d) * Math.PI) / 180;
+  const [lon1, lat1] = myCoords;
+  const [lon2, lat2] = theirCoords;
+  const dLat = toRad(lat2 - lat1);
+  const dLon = toRad(lon2 - lon1);
+  const a =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
+  const km = 6371 * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  return km < 1 ? 0 : Math.round(km);
+}
+
+// Dodaj `distanceKm` profilu. Ako je korisnik isključio prikaz lokacije
+// (showLocation: false), udaljenost se ne otkriva.
+function withDistance(profile, myCoords) {
+  profile.distanceKm = profile.showLocation
+    ? distanceBetween(myCoords, profile.location)
+    : null;
+  return profile;
+}
+
 // ================= LOGIN =================
 exports.login = async (req, res) => {
   try {
@@ -551,7 +590,7 @@ exports.getPotentialMatches = async (req, res) => {
       if (u.location && u.locationCity) {
         u.location.locationCity = u.locationCity;
       }
-      return u;
+      return withDistance(u, user.location?.coordinates);
     });
 
     console.log('[POTENTIAL MATCHES] Broj nakon filtera:', potentialMatches.length);
@@ -573,8 +612,8 @@ const DISCOVER_NEW_WINDOW_MS = 7 * 24 * 60 * 60 * 1000; // "novi" = zadnjih 7 da
 const DISCOVER_CANDIDATE_POOL_SIZE = 60; // koliko kandidata povlačimo pre scoring-a
 
 // Polja koja vraćamo za svaki profil u Discover odgovoru.
-// `location` (tačne koordinate) je namerno izbačen: klijentu treba samo
-// locationCity, a koordinate drugih korisnika ne treba da napuštaju server.
+// `location` se povlači samo da bi server izračunao distanceKm; toDiscoverProfile
+// ga briše iz odgovora, pa koordinate drugih korisnika ne napuštaju server.
 const DISCOVER_SELECT_FIELDS = `
   fullName
   profilePictures
@@ -596,6 +635,7 @@ const DISCOVER_SELECT_FIELDS = `
   diet
   jobTitle
   education
+  location
   locationCity
   showLocation
   gender
@@ -611,8 +651,10 @@ function countSharedInterests(userInterests = [], candidateInterests = []) {
 }
 
 // Dodaje `liked` i sakriva grad ako je korisnik isključio prikaz lokacije.
-function toDiscoverProfile(doc, liked = false) {
+function toDiscoverProfile(doc, liked = false, myCoords = null) {
   const out = { ...doc, liked };
+  withDistance(out, myCoords);
+  delete out.location; // tačne koordinate ne napuštaju server
   if (!out.showLocation) out.locationCity = null;
   return out;
 }
@@ -680,6 +722,7 @@ exports.getDiscoverFeed = async (req, res) => {
     }
 
     const now = Date.now();
+    const myCoords = user.location?.coordinates;
     const batchGeneratedAt = user.discoverBatchGeneratedAt
       ? user.discoverBatchGeneratedAt.getTime()
       : null;
@@ -767,9 +810,9 @@ exports.getDiscoverFeed = async (req, res) => {
       return res.status(200).json({
         generatedAt: generatedAt.toISOString(),
         expiresAt: new Date(generatedAt.getTime() + DISCOVER_BATCH_WINDOW_MS).toISOString(),
-        recommended: recommended.map((c) => toDiscoverProfile(c)),
-        sameGoals: sameGoals.map((c) => toDiscoverProfile(c)),
-        newMembers: newMembers.map((c) => toDiscoverProfile(c)),
+        recommended: recommended.map((c) => toDiscoverProfile(c, false, myCoords)),
+        sameGoals: sameGoals.map((c) => toDiscoverProfile(c, false, myCoords)),
+        newMembers: newMembers.map((c) => toDiscoverProfile(c, false, myCoords)),
       });
     }
 
@@ -810,7 +853,7 @@ exports.getDiscoverFeed = async (req, res) => {
       return ids
         .map((id) => map.get(id.toString()))
         .filter(Boolean)
-        .map((d) => toDiscoverProfile(d, likedSet.has(d._id.toString())));
+        .map((d) => toDiscoverProfile(d, likedSet.has(d._id.toString()), myCoords));
     };
 
     return res.status(200).json({
@@ -1496,6 +1539,7 @@ exports.getIncomingLikes = async (req, res) => {
         u.location.locationCity = u.locationCity;
       }
       u.superLiked = superLikedSet.has(u._id.toString());
+      withDistance(u, user.location?.coordinates);
       return u;
     });
 

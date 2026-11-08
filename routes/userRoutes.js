@@ -71,8 +71,6 @@ router.post(
 /* ===================== SAVE FCM TOKEN ===================== */
 router.post('/save-fcm-token', authMiddleware, async (req, res) => {
   try {
-    console.log("Request body:", req.body);
-
     const { fcmToken } = req.body;
 
     if (!fcmToken) {
@@ -82,14 +80,17 @@ router.post('/save-fcm-token', authMiddleware, async (req, res) => {
       });
     }
 
+    // FCM token pripada UREĐAJU, ne korisniku. Skidamo ga sa svih drugih
+    // naloga, da push za jednog korisnika ne stigne na telefon drugog.
+    await User.updateMany(
+      { fcmToken, _id: { $ne: req.user.id } },
+      { $unset: { fcmToken: "" } }
+    );
+
     const updatedUser = await User.findByIdAndUpdate(
       req.user.id,
-      {
-        fcmToken: fcmToken
-      },
-      {
-        new: true
-      }
+      { fcmToken },
+      { new: true }
     );
 
     if (!updatedUser) {
@@ -98,11 +99,6 @@ router.post('/save-fcm-token', authMiddleware, async (req, res) => {
         message: 'User not found'
       });
     }
-
-    console.log(
-      `✅ FCM token sačuvan za ${updatedUser.fullName}:`,
-      fcmToken
-    );
 
     res.json({
       success: true
@@ -115,6 +111,17 @@ router.post('/save-fcm-token', authMiddleware, async (req, res) => {
       success: false,
       message: 'Server error'
     });
+  }
+});
+
+/* ===================== DELETE FCM TOKEN (logout) ===================== */
+router.delete('/fcm-token', authMiddleware, async (req, res) => {
+  try {
+    await User.findByIdAndUpdate(req.user.id, { $unset: { fcmToken: "" } });
+    res.json({ success: true });
+  } catch (error) {
+    console.error('❌ DELETE FCM TOKEN ERROR:', error);
+    res.status(500).json({ success: false, message: 'Server error' });
   }
 });
 

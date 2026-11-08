@@ -131,61 +131,29 @@ UserSchema.index({ likes: 1 });             // getLikedByMeIds
 UserSchema.index({ blockedUsers: 1 });      // "ko je mene blokirao"
 UserSchema.index({ createdAt: -1 });        // "New to VibrA"
 
-// LOG: Pre cuvanja dokumenta (.save())
-UserSchema.pre("save", function (next) {
-  console.log(`\n================== [MONGOOSE PRE-SAVE] ==================`);
-  console.log(`User ID: ${this._id}`);
-  console.log(`Updated Notifications:`, JSON.stringify(this.notifications, null, 2));
-  console.log(`Premium Status: ${this.isPremium} (Plan: ${this.premiumPlan}, Expires: ${this.premiumExpiresAt})`);
-  console.log(`==========================================================\n`);
-  next();
-});
-
-// LOG: Pre izmene dokumenta kroz update metode (.findOneAndUpdate / .findByIdAndUpdate)
-UserSchema.pre("findOneAndUpdate", function (next) {
-  const update = this.getUpdate();
-  console.log(`\n================== [MONGOOSE PRE-UPDATE] ==================`);
-  console.log(`Filter:`, JSON.stringify(this.getQuery(), null, 2));
-  console.log(`Update payload:`, JSON.stringify(update, null, 2));
-  if (update.$set && update.$set.notifications) {
-    console.log(`[NOTIFICATIONS CHANGED]:`, JSON.stringify(update.$set.notifications, null, 2));
-  }
-  if (update.$set && update.$set.isPremium !== undefined) {
-    console.log(`[PREMIUM STATUS CHANGED]:`, update.$set.isPremium, update.$set.premiumPlan);
-  }
-  console.log(`===========================================================\n`);
-  next();
-});
-
-// LOG: Nakon uspesnog update-a
-UserSchema.post("findOneAndUpdate", function (doc) {
-  if (doc) {
-    console.log(`\n================== [MONGOOSE POST-UPDATE] ==================`);
-    console.log(`User ID: ${doc._id} successfully updated.`);
-    console.log(`Current saved notifications:`, JSON.stringify(doc.notifications, null, 2));
-    console.log(`Current saved isPremium:`, doc.isPremium, `(Expires: ${doc.premiumExpiresAt})`);
-    console.log(`============================================================\n`);
-  }
-});
-
 const User = model("User", UserSchema);
 
-// LOG: Indeksi kolekcije "users" pri pokretanju servera.
-// User.init() pravi indekse iz šeme (sačeka konekciju) i baca grešku ako ne uspe
-// (npr. zbog duplikata). Ako je neki unique indeks "sparse: false", registracija
-// bez tog polja (npr. bez emaila) puca sa E11000.
-User.init()
-  .then(async () => {
+/**
+ * Pravi indekse iz šeme i ispisuje ih. Poziva se iz server.js TEK POSLE
+ * uspešne konekcije na MongoDB (inače init() čeka konekciju i pada posle 10s).
+ * Ako je neki unique indeks "sparse: false", registracija bez tog polja
+ * (npr. bez emaila) puca sa E11000.
+ */
+async function logIndexes() {
+  try {
+    await User.init();
     const indexes = await User.collection.indexes();
     console.log("\n📚 [INDEXES] kolekcija users:");
     indexes.forEach((i) =>
       console.log(`   ${i.name} | unique: ${!!i.unique} | sparse: ${!!i.sparse}`)
     );
     console.log("");
-  })
-  .catch((err) =>
-    console.error("❌ [INDEXES] greška pri kreiranju indeksa:", err.message)
-  );
+  } catch (err) {
+    console.error("❌ [INDEXES] greška pri kreiranju indeksa:", err.message);
+  }
+}
 
-// Direktno eksportujemo model
+// Direktno eksportujemo model, a funkcija je dostupna kao User.logIndexes
+User.logIndexes = logIndexes;
+
 module.exports = User;

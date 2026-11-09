@@ -94,74 +94,65 @@ io.on("connection", (socket) => {
 
   io.emit("updateOnlineUsers", Array.from(onlineUsers.keys()));
 
-  // ==================================================
-  // ❤️ LIKE RECEIVED (REAL-TIME LIKES TAB)
-  // ==================================================
-  socket.on("likeSent", ({ targetUserId }) => {
-    console.log("❤️ likeSent → from:", userId, "to:", targetUserId);
-
-    const receiverSockets = onlineUsers.get(String(targetUserId));
-    console.log("📤 emit likeReceived → sockets:", receiverSockets);
-
-    if (receiverSockets) {
-      receiverSockets.forEach((sid) => {
-        io.to(sid).emit("likeReceived", { fromUserId: userId });
-      });
-    }
-  });
-
-  // ==================================================
   // 📩 SEND MESSAGE
   // ==================================================
-  socket.on("sendMessage", async ({ receiverId, text }, callback) => {
-    console.log("✉️ sendMessage stigao", { from: userId, to: receiverId });
-
-    if (!receiverId || !text) {
-      console.error("❌ sendMessage: Nedostaju podaci", { receiverId, text });
-      return callback?.({ status: "error", message: "Nedostaju podaci" });
-    }
+   socket.on("sendMessage", async ({ receiverId, text } = {}, callback) => {
+    const reply = (data) => typeof callback === "function" && callback(data);
 
     try {
-      console.log("🔍 Tražim konverzaciju između korisnika", { userId, receiverId });
+      // Validacija ulaza
+      if (!receiverId || !mongoose.Types.ObjectId.isValid(receiverId)) {
+        return reply({ status: "error", message: "Nevalidan primalac" });
+      }
+      const cleanText = typeof text === "string" ? text.trim() : "";
+      if (!cleanText) return reply({ status: "error", message: "Poruka ne može biti prazna" });
+      if (cleanText.length > 2000) return reply({ status: "error", message: "Poruka je predugačka" });
+      if (String(receiverId) === userId) {
+        return reply({ status: "error", message: "Nevalidan primalac" });
+      }
+
+      // Pošiljalac i primalac
+      const [sender, receiver] = await Promise.all([
+        User.findById(userId).select("fullName avatar blockedUsers matches"),
+        User.findById(receiverId).select("fullName fcmToken notifications blockedUsers"),
+      ]);
+      if (!sender || !receiver) {
+        return reply({ status: "error", message: "Korisnik nije pronađen" });
+      }
+
+      // Blok u bilo kom smeru
+      const blocked =
+        (sender.blockedUsers || []).some((id) => id.equals(receiver._id)) ||
+        (receiver.blockedUsers || []).some((id) => id.equals(sender._id));
+      if (blocked) return reply({ status: "error", message: "Blokiran", code: "BLOCKED" });
+
+      // Konverzacija mora da postoji i par mora biti matchovan
       const conversation = await Conversation.findOne({
         "participants.user": { $all: [userId, receiverId] },
       });
-
-      if (!conversation) {
-        console.error("❌ Konverzacija ne postoji", { userId, receiverId });
-        return callback?.({
-          status: "error",
-          message: "Konverzacija ne postoji",
-        });
+      const isMatched = (sender.matches || []).some((id) => id.equals(receiver._id));
+      if (!conversation || !isMatched) {
+        return reply({ status: "error", message: "Konverzacija ne postoji", code: "NO_CONVERSATION" });
       }
 
-      console.log("💾 Kreiram poruku za konverzaciju", { conversationId: conversation._id });
       const message = await Message.create({
         conversationId: conversation._id,
         sender: userId,
         receiver: receiverId,
-        text,
+        text: cleanText,
       });
 
       conversation.messages.push(message._id);
-
-      console.log("🔄 Ažuriram status učesnika u konverzaciji");
       conversation.participants = conversation.participants.map((p) => {
         const obj = p.toObject();
-
-        if (p.user.equals(receiverId)) {
-          obj.has_unread_messages = true;
-        }
-
-        if (p.user.equals(userId)) {
+        if (p.user.equals(receiver._id)) obj.has_unread_messages = true;
+        if (p.user.equals(sender._id)) {
           obj.has_unread_messages = false;
           obj.has_sent_message = true;
           obj.is_new = false;
         }
-
         return obj;
       });
-
       conversation.markModified("participants");
       await conversation.save();
 
@@ -173,57 +164,25 @@ io.on("connection", (socket) => {
         receiver: message.receiver.toString(),
       };
 
-      console.log("📤 Emitujem poruku primaocu preko Socket.IO", { receiverId });
+      // Socket primaocu
       const receiverSockets = onlineUsers.get(String(receiverId));
       if (receiverSockets) {
-        receiverSockets.forEach((sid) => {
-          console.log("➡️ Emitujem na socket", { sid });
-          io.to(sid).emit("receiveMessage", payload);
-        });
-      } else {
-        console.warn("⚠️ Primalac nije online", { receiverId });
+        receiverSockets.forEach((sid) => io.to(sid).emit("receiveMessage", payload));
       }
 
-      console.log("👥 Online users:", Array.from(onlineUsers.keys()));
-      console.log("📱 Receiver sockets:", onlineUsers.get(String(receiverId)));
+      // Push (best effort, ne blokira odgovor)
+      if (receiver.fcmToken) {
+        sendMessageNotification(receiver, sender, cleanText, conversation._id).catch((e) =>
+          console.error("❌ Greška pri slanju push notifikacije:", e.message)
+        );
+      }
 
-      console.log("🔔 Pokrećem asinhrono slanje push notifikacije");
-      (async () => {
-        try {
-          console.log("🔍 Dohvatam podatke za notifikaciju", { receiverId, userId });
-          const receiver = await User.findById(receiverId).select('fcmToken _id fullName notifications');
-          const sender = await User.findById(userId).select('fullName avatar _id');
-
-          console.log(`🔔 NOTIF: ${sender.fullName} → ${receiver?.fullName} | token: ${receiver?.fcmToken?.substring(0, 15)}`);
-
-          if (receiver && receiver.fcmToken) {
-            console.log("🔔 Pozivam sendMessageNotification za", {
-              receiverId: receiver._id,
-              senderId: sender._id,
-              fcmToken: receiver.fcmToken.substring(0, 10),
-            });
-            await sendMessageNotification(
-              receiver,
-              sender,
-              text,
-              conversation._id
-            );
-          } else {
-            console.warn("⚠️ Primalac nema FCM token ili nije pronađen", { receiverId });
-          }
-        } catch (pushErr) {
-          console.error("❌ Greška pri slanju push notifikacije", pushErr);
-        }
-      })();
-
-      console.log("✅ Poruka uspešno obrađena, šaljem callback pošiljaocu");
-      callback?.({ status: "ok", message: payload });
+      return reply({ status: "ok", message: payload });
     } catch (err) {
       console.error("❌ sendMessage error", err);
-      callback?.({ status: "error", message: "Server error" });
+      return reply({ status: "error", message: "Server error" });
     }
   });
-
   // ================= JOIN CHAT =================
   socket.on("joinChat", (chatId) => {
     socket.join(chatId);

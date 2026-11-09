@@ -1857,21 +1857,76 @@ exports.deleteAccount = async (req, res) => {
   try {
     const userId = req.user.id || req.user._id || req.user.userId;
 
-    console.log(`\n================== [DELETE ACCOUNT] ==================`);
-    console.log(`Deleting account for User ID: ${userId}`);
+    const exists = await User.exists({ _id: userId });
+    if (!exists) return res.status(404).json({ message: "User not found" });
 
-    const deletedUser = await User.findByIdAndDelete(userId);
+    // 1) Konverzacije i poruke
+    const conversations = await Conversation.find({ "participants.user": userId })
+      .select("_id participants")
+      .lean();
+    const convIds = conversations.map((c) => c._id);
 
-    if (!deletedUser) {
-      return res.status(404).json({ message: "User not found" });
-    }
+    await Message.deleteMany({
+      $or: [
+        { conversationId: { $in: convIds } },
+        { sender: userId },
+        { receiver: userId },
+      ],
+    });
+    await Conversation.deleteMany({ _id: { $in: convIds } });
 
-    console.log(`User ${userId} deleted successfully.`);
-    console.log(`======================================================\n`);
+    // 2) Javi drugoj strani (ako je online) da razgovor više ne postoji
+    conversations.forEach((c) => {
+      const other = c.participants.find((p) => p.user && p.user.toString() !== String(userId));
+      const sockets = other && global.onlineUsers?.get(other.user.toString());
+      if (sockets) {
+        sockets.forEach((sid) =>
+          global.io.to(sid).emit("conversationRemoved", { conversationId: c._id.toString() })
+        );
+      }
+    });
+
+    // 3) Skloni ID iz tuđih lista
+    await User.updateMany(
+      {
+        $or: [
+          { matches: userId },
+          { likes: userId },
+          { dislikes: userId },
+          { blockedUsers: userId },
+          { superLikedBy: userId },
+          { discoverRecommendedIds: userId },
+          { discoverSameGoalsIds: userId },
+          { discoverNewIds: userId },
+        ],
+      },
+      {
+        $pull: {
+          matches: userId,
+          likes: userId,
+          dislikes: userId,
+          blockedUsers: userId,
+          superLikedBy: userId,
+          discoverRecommendedIds: userId,
+          discoverSameGoalsIds: userId,
+          discoverNewIds: userId,
+        },
+      }
+    );
+    await User.updateMany(
+      { "lastSwipe.targetUserId": userId },
+      { $unset: { lastSwipe: "" } }
+    );
+
+    // 4) Stari Match zapisi
+    await Match.deleteMany({ $or: [{ user1: userId }, { user2: userId }] });
+
+    // 5) Korisnik na kraju
+    await User.findByIdAndDelete(userId);
 
     return res.status(200).json({ message: "Account deleted successfully." });
   } catch (error) {
     console.error("Delete account error:", error);
-    return res.status(500).json({ message: "Server error", error: error.message });
+    return res.status(500).json({ message: "Server error" });
   }
 };

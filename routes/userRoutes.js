@@ -54,11 +54,7 @@ router.post('/login', (req, res, next) => {
 
 /* ===================== REVENUECAT WEBHOOK ===================== */
 
-/*
-  Premium status se upisuje ISKLJUČIVO ovde, nikada na zahtev klijenta.
-  Ruta nema authMiddleware jer je zove RevenueCat, ali je zaštićena
-  Authorization headerom (REVENUECAT_WEBHOOK_SECRET) unutar kontrolera.
-*/
+
 router.post(
   '/revenuecat-webhook',
   (req, res, next) => {

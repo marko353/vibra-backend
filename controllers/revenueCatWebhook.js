@@ -35,8 +35,7 @@ exports.revenueCatWebhook = async (req, res) => {
     environment: req.body?.event?.environment,
   });
 
-  // 1) Provera autorizacije. U RevenueCat Dashboard-u (Webhooks > Authorization header)
-  //    upiši tačno: Bearer <REVENUECAT_WEBHOOK_SECRET>
+   
   const secret = process.env.REVENUECAT_WEBHOOK_SECRET;
 
   if (!secret) {

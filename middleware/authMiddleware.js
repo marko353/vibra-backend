@@ -1,7 +1,7 @@
 const jwt = require("jsonwebtoken");
 
 const authMiddleware = (req, res, next) => {
-  console.log("Authorization header:", req.headers.authorization);
+
 
   const token = req.headers.authorization && req.headers.authorization.split(" ")[1];
 
@@ -14,7 +14,7 @@ const authMiddleware = (req, res, next) => {
 
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
     req.user = decoded;
-    console.log("Token is valid, user decoded:", decoded);
+
     next();
   } catch (error) {
     console.error("Token verification failed:", error);

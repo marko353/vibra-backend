@@ -1335,104 +1335,94 @@ exports.getMessages = async (req, res) => {
 // ================= POST MESSAGE (Podržava slanje po chatId ili recipientId) =================
 exports.postMessage = async (req, res) => {
   try {
-    const { text, recipientId } = req.body;
-    const { chatId: chatIdParam } = req.params;
     const senderId = req.user.id;
+    const { chatId: chatIdParam } = req.params;
+    const { recipientId } = req.body;
+
+    const text = typeof req.body.text === "string" ? req.body.text.trim() : "";
+    if (!text) return res.status(400).json({ message: "Poruka ne može biti prazna." });
+    if (text.length > 2000) return res.status(400).json({ message: "Poruka je predugačka." });
 
     let conversation = null;
-    let targetRecipientId = recipientId;
+    let targetRecipientId = null;
 
     if (chatIdParam) {
-      conversation = await Conversation.findById(chatIdParam);
-      if (!conversation) return res.status(404).json({ message: "Konverzacija nije pronađena." });
-
-      const receiverParticipant = conversation.participants.find(p => p.user && !p.user.equals(senderId));
-      if (!receiverParticipant || !receiverParticipant.user) return res.status(400).json({ message: "Primalac nije pronađen u konverzaciji." });
-      targetRecipientId = receiverParticipant.user.toString();
-    }
-    else if (recipientId) {
-      conversation = await Conversation.findOne({ "participants.user": { $all: [senderId, recipientId] } });
-
-      if (!conversation) {
-        conversation = new Conversation({
-          participants: [
-            { user: senderId, is_new: false, has_unread_messages: false, has_sent_message: true },
-            { user: recipientId, is_new: true, has_unread_messages: true, has_sent_message: false }
-          ],
-        });
-        await conversation.save();
-      } else {
-        conversation.participants = conversation.participants.map(p => {
-          if (p.user.equals(senderId)) return { ...p.toObject(), is_new: false, has_sent_message: true, has_unread_messages: false };
-          if (p.user.equals(recipientId)) return { ...p.toObject(), has_unread_messages: true };
-          return p.toObject();
-        });
+      if (!mongoose.Types.ObjectId.isValid(chatIdParam)) {
+        return res.status(400).json({ message: "Nevalidan chatId." });
       }
-    }
-    else {
+      conversation = await Conversation.findOne({
+        _id: chatIdParam,
+        "participants.user": senderId,
+      });
+      if (!conversation) {
+        return res.status(404).json({ message: "Konverzacija nije pronađena." });
+      }
+      const other = conversation.participants.find((p) => p.user && !p.user.equals(senderId));
+      if (!other) return res.status(400).json({ message: "Primalac nije pronađen u konverzaciji." });
+      targetRecipientId = other.user.toString();
+    } else if (recipientId) {
+      if (!mongoose.Types.ObjectId.isValid(recipientId)) {
+        return res.status(400).json({ message: "Nevalidan primalac." });
+      }
+      targetRecipientId = String(recipientId);
+    } else {
       return res.status(400).json({ message: "Nedostaju chatId ili recipientId za slanje poruke." });
     }
 
-    if (!conversation || !targetRecipientId) {
-      return res.status(500).json({ message: "Greška u obradi konverzacije." });
+    const [sender, receiver] = await Promise.all([
+      User.findById(senderId),
+      User.findById(targetRecipientId),
+    ]);
+    if (!sender || !receiver) {
+      return res.status(404).json({ message: "Korisnik nije pronađen." });
     }
 
-    const newMessage = new Message({
+    const blocked =
+      (sender.blockedUsers || []).some((id) => id.equals(receiver._id)) ||
+      (receiver.blockedUsers || []).some((id) => id.equals(sender._id));
+    if (blocked) return res.status(403).json({ code: "BLOCKED" });
+
+    if (!conversation) {
+      const isMatch = (sender.matches || []).some((id) => id.equals(receiver._id));
+      if (!isMatch) return res.status(403).json({ code: "NOT_MATCHED" });
+      conversation = await getOrCreateConversation(sender._id, receiver._id);
+    }
+
+    const newMessage = await Message.create({
       conversationId: conversation._id,
-      sender: senderId,
-      receiver: targetRecipientId,
-      text
+      sender: sender._id,
+      receiver: receiver._id,
+      text,
     });
-    await newMessage.save();
 
     conversation.messages.push(newMessage._id);
-
-    conversation.participants = conversation.participants.map(p => {
-      const participantObject = p.toObject ? p.toObject() : { ...p };
-
-      if (p.user.equals(targetRecipientId)) {
-        participantObject.has_unread_messages = true;
+    conversation.participants = conversation.participants.map((p) => {
+      const obj = p.toObject ? p.toObject() : { ...p };
+      if (p.user.equals(receiver._id)) {
+        obj.has_unread_messages = true;
+      } else if (p.user.equals(sender._id)) {
+        obj.has_unread_messages = false;
+        obj.is_new = false;
+        obj.has_sent_message = true;
       }
-      else if (p.user.equals(senderId)) {
-        participantObject.has_unread_messages = false;
-        participantObject.is_new = false;
-        participantObject.has_sent_message = true;
-      }
-      return participantObject;
+      return obj;
     });
-
-    conversation.markModified('participants');
+    conversation.markModified("participants");
     await conversation.save();
 
-    // ================= PUSH NOTIFICATION =================
-    try {
-      const receiver = await User.findById(targetRecipientId);
-      const sender = await User.findById(senderId);
-
-      if (receiver?.fcmToken) {
-        await sendMessageNotification(
-          receiver,
-          sender,
-          text,
-          conversation._id
-        );
-
-        console.log("✅ Message notification poslata");
-      }
-    } catch (notificationError) {
-      console.error(
-        "❌ Greška pri slanju message notifikacije:",
-        notificationError
+    if (receiver.fcmToken) {
+      await safely("message push", () =>
+        sendMessageNotification(receiver, sender, text, conversation._id)
       );
     }
 
-    res.status(201).json({
+    return res.status(201).json({
       ...newMessage.toObject(),
-      conversationId: conversation._id.toString()
+      conversationId: conversation._id.toString(),
     });
   } catch (error) {
     console.error("[Controller] POST MESSAGE - Error:", error);
-    res.status(500).json({ message: "Greška prilikom slanja poruke" });
+    return res.status(500).json({ message: "Greška prilikom slanja poruke" });
   }
 };
 

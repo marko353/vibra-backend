@@ -13,6 +13,10 @@ const mongoose = require('mongoose'); // Ensure mongoose is imported
 // Rewind (poništavanje poslednjeg swipe-a): true = samo Premium, false = svi korisnici
 const REWIND_REQUIRES_PREMIUM = true;
 
+// Kad je slider udaljenosti na ovoj vrednosti (ili većoj), geo filter se NE primenjuje
+// (znači "bez ograničenja"). Postavi na maksimum svog slidera u aplikaciji.
+const UNLIMITED_KM = 200;
+
 // Dozvoljeni razlozi prijave (isti kao u aplikaciji)
 const REPORT_REASONS = [
   "Fake profile",
@@ -87,7 +91,8 @@ async function getOrCreateConversation(userA, userB, participants) {
 
 // Izgradi $near geo filter.
 // Prioritet koordinata: lat/lon iz query-ja, pa sačuvana lokacija korisnika
-// (ako postoji i nije [0, 0]). Vraća null ako nema koordinata ili maxDistance.
+// (ako postoji i nije [0, 0]). Vraća null ako nema koordinata ili maxDistance,
+// ili ako je slider na maksimumu (UNLIMITED_KM = bez ograničenja).
 // maxDistance je u kilometrima.
 function buildGeoFilter(user, query, defaultDistanceKm = 200) {
   const hasQueryCoords = query.latitude && query.longitude;
@@ -104,6 +109,9 @@ function buildGeoFilter(user, query, defaultDistanceKm = 200) {
   const distanceKm = Number(query.maxDistance) || defaultDistanceKm;
 
   if (!Number.isFinite(lat) || !Number.isFinite(lon)) return null;
+
+  // Slider na maksimumu = bez ograničenja udaljenosti
+  if (distanceKm >= UNLIMITED_KM) return null;
 
   return {
     $near: {
@@ -547,11 +555,12 @@ exports.getPotentialMatches = async (req, res) => {
 
     // Geo filter: lat/lon iz query-ja, a ako ih klijent ne pošalje,
     // koristi se sačuvana lokacija korisnika. Profili bez lokacije ostaju vidljivi.
+    // Na maksimumu slidera (UNLIMITED_KM) geo filter se ne primenjuje.
     const geoFilter = buildGeoFilter(user, req.query);
     if (applyGeoFilter(filter, geoFilter)) {
       console.log("[DBG] 5) geo filter uključen (sa profilima bez lokacije):", JSON.stringify(filter.$or));
     } else {
-      console.log("[DBG] 5) geo filter NIJE uključen (nema maxDistance ili koordinata)");
+      console.log("[DBG] 5) geo filter NIJE uključen (nema maxDistance, koordinata ili je na maksimumu)");
     }
 
     console.log("[DBG] finalni filter:", JSON.stringify(filter));
@@ -702,12 +711,16 @@ async function buildDiscoverBaseFilter(user, query) {
     const lon = hasQueryCoords ? Number(query.longitude) : user.location.coordinates[0];
     const distanceKm = Number(query.maxDistance) || user.filters?.distance || 50;
 
-    filter.location = {
-      $near: {
-        $geometry: { type: "Point", coordinates: [lon, lat] },
-        $maxDistance: distanceKm * 1000,
-      },
-    };
+    // Na maksimumu slidera (UNLIMITED_KM) nema geo ograničenja.
+    // Inače: profili u radijusu + profili bez poznate lokacije ($near bi njih izbacio).
+    if (Number.isFinite(lat) && Number.isFinite(lon) && distanceKm < UNLIMITED_KM) {
+      applyGeoFilter(filter, {
+        $near: {
+          $geometry: { type: "Point", coordinates: [lon, lat] },
+          $maxDistance: distanceKm * 1000,
+        },
+      });
+    }
   }
 
   return filter;
@@ -744,12 +757,19 @@ exports.getDiscoverFeed = async (req, res) => {
 
       const filter = await buildDiscoverBaseFilter(user, req.query);
 
-      // $near u MongoDB-u vraća rezultate već sortirane po distanci —
-      // oslanjamo se na taj redosled za "Same dating goals" sekciju.
       const candidates = await User.find(filter)
         .select(DISCOVER_SELECT_FIELDS)
         .limit(DISCOVER_CANDIDATE_POOL_SIZE)
         .lean();
+
+      // $geoWithin (u applyGeoFilter) ne sortira po udaljenosti, pa sortiramo ručno:
+      // najbliži prvi, a profili bez lokacije (distanca null) na kraj.
+      // Ovaj redosled se koristi za "Same dating goals" sekciju.
+      candidates.sort((a, b) => {
+        const da = distanceBetween(myCoords, a.location);
+        const db = distanceBetween(myCoords, b.location);
+        return (da ?? Infinity) - (db ?? Infinity);
+      });
 
       console.log(`[DISCOVER] Pronađeno ${candidates.length} kandidata u pool-u`);
 

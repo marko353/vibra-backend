@@ -15,6 +15,9 @@ const phoneSignupSecret = () => process.env.JWT_SECRET + ":phone-signup";
 
 const MIN_AGE = 18;
 
+// Koga korisnik želi da vidi (iste vrednosti kao filter na klijentu)
+const ALLOWED_INTERESTS = ["female", "male", "any"];
+
 const isAdult = (birthDate) => {
   const date = new Date(birthDate);
   if (isNaN(date.getTime())) return false;
@@ -33,12 +36,16 @@ const randomUsername = () => `user_${crypto.randomBytes(4).toString("hex")}`;
 // Registracija korisnika (email + lozinka, ili telefon potvrđen SMS kodom)
 exports.register = async (req, res) => {
   try {
-    const { fullName, username, birthDate, email, password, gender, phoneToken } = req.body;
+    const { fullName, username, birthDate, email, password, gender, interestedIn, phoneToken } = req.body;
 
     if (!["male", "female", "other"].includes(gender)) {
       return res
         .status(400)
         .json({ message: 'Pol je obavezan i mora biti "male", "female" ili "other".' });
+    }
+
+    if (!ALLOWED_INTERESTS.includes(interestedIn)) {
+      return res.status(400).json({ message: "Select who you want to see." });
     }
 
     if (!isAdult(birthDate)) {
@@ -95,6 +102,9 @@ exports.register = async (req, res) => {
       gender,
       phone: verifiedPhone,
       phoneVerified: !!verifiedPhone,
+      // Izbor pri registraciji odmah postaje aktivan filter;
+      // ageRange i distance dolaze iz podrazumevanih vrednosti u šemi
+      filters: { gender: interestedIn },
     });
 
     await newUser.save();

@@ -9,6 +9,13 @@ const { Server } = require("socket.io");
 const jwt = require("jsonwebtoken");
 const User = require('./models/User');
 const { sendMatchNotification, sendMessageNotification } = require('./notificationService');
+// Moderacija sadržaja (Sightengine)
+const {
+  moderateText,
+  rejectionPayload,
+  unavailablePayload,
+  ModerationUnavailableError,
+} = require('./services/sightengineService');
 // Routes & models
 const authRoutes = require("./routes/authRoutes");
 const userRoutes = require("./routes/userRoutes");
@@ -133,6 +140,23 @@ io.on("connection", (socket) => {
       const isMatched = (sender.matches || []).some((id) => id.equals(receiver._id));
       if (!conversation || !isMatched) {
         return reply({ status: "error", message: "Konverzacija ne postoji", code: "NO_CONVERSATION" });
+      }
+
+      // Moderacija teksta: odbijena poruka se ne čuva i ne šalje primaocu.
+      // Aplikacija iz odgovora vidi 'rejected' (Toast) ili 'MODERATION_UNAVAILABLE'
+      // (poruka ostaje kao neposlata sa "Tap to retry").
+      try {
+        const { ok, reasons } = await moderateText(cleanText);
+        if (!ok) {
+          console.warn(`[MODERATION] Poruka odbijena (user ${userId}):`, reasons);
+          return reply(rejectionPayload("text", reasons));
+        }
+      } catch (modErr) {
+        if (modErr instanceof ModerationUnavailableError) {
+          console.error("[MODERATION] Sightengine nedostupan:", modErr.message);
+          return reply(unavailablePayload("text"));
+        }
+        throw modErr;
       }
 
       const message = await Message.create({

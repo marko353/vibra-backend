@@ -36,6 +36,14 @@ const { revenueCatWebhook } = require('../controllers/revenueCatWebhook');
 const { syncPremium } = require('../controllers/syncPremium');
 const phoneController = require("../controllers/phoneController");
 
+// Moderacija sadržaja (Sightengine)
+const {
+  moderateImage,
+  rejectionPayload,
+  unavailablePayload,
+  ModerationUnavailableError,
+} = require('../services/sightengineService');
+
 const User = require("../models/User");
 
 const router = express.Router();
@@ -142,6 +150,27 @@ router.post(
     }
 
     try {
+      // Moderacija pre Cloudinary-ja: odbijena slika nikad ne napusti server.
+      // 422 = odbijeno, 503 = provera nedostupna (aplikacija prikazuje Toast).
+      try {
+        const { ok, reasons } = await moderateImage(
+          req.file.buffer,
+          req.file.originalname,
+          req.file.mimetype
+        );
+
+        if (!ok) {
+          console.warn(`[MODERATION] Slika odbijena (user ${req.user.id}):`, reasons);
+          return res.status(422).json(rejectionPayload('image', reasons));
+        }
+      } catch (err) {
+        if (err instanceof ModerationUnavailableError) {
+          console.error('[MODERATION] Sightengine nedostupan:', err.message);
+          return res.status(503).json(unavailablePayload('image'));
+        }
+        throw err;
+      }
+
       const result = await new Promise((resolve, reject) => {
         const stream = cloudinary.uploader.upload_stream(
           { folder: "profile_pictures" },

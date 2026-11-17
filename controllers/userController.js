@@ -17,6 +17,13 @@ const REWIND_REQUIRES_PREMIUM = true;
 // (znači "bez ograničenja"). Postavi na maksimum svog slidera u aplikaciji.
 const UNLIMITED_KM = 200;
 
+const {
+  moderateText,
+  rejectionPayload,
+  unavailablePayload,
+  ModerationUnavailableError,
+} = require('../services/sightengineService');
+
 // Dozvoljeni razlozi prijave (isti kao u aplikaciji)
 const REPORT_REASONS = [
   "Fake profile",
@@ -356,7 +363,35 @@ exports.updateProfile = async (req, res) => {
         delete finalUpdatePayload.location;
       }
     }
+        // Moderacija slobodnog teksta (bio, jobTitle). Proverava se samo ono što
+    // se zaista promenilo, da stari tekst ne blokira nepovezano čuvanje (npr. lokacije).
+    const textFields = ['bio', 'jobTitle'].filter(
+      (k) => typeof finalUpdatePayload[k] === 'string' && finalUpdatePayload[k].trim()
+    );
 
+    if (textFields.length > 0) {
+      const current = await User.findById(userId).select('bio jobTitle').lean();
+      const changedText = textFields
+        .filter((k) => finalUpdatePayload[k].trim() !== (current?.[k] || '').trim())
+        .map((k) => finalUpdatePayload[k])
+        .join('\n');
+
+      if (changedText) {
+        try {
+          const { ok, reasons } = await moderateText(changedText);
+          if (!ok) {
+            console.warn(`[MODERATION] Tekst profila odbijen (user ${userId}):`, reasons);
+            return res.status(422).json(rejectionPayload('text', reasons));
+          }
+        } catch (err) {
+          if (err instanceof ModerationUnavailableError) {
+            console.error('[MODERATION] Sightengine nedostupan:', err.message);
+            return res.status(503).json(unavailablePayload('text'));
+          }
+          throw err;
+        }
+      }
+    }
     console.log('[UPDATE PROFILE] finalUpdatePayload:', JSON.stringify(finalUpdatePayload, null, 2));
 
     if (Object.keys(finalUpdatePayload).length === 0) {
@@ -1406,6 +1441,19 @@ exports.postMessage = async (req, res) => {
       const isMatch = (sender.matches || []).some((id) => id.equals(receiver._id));
       if (!isMatch) return res.status(403).json({ code: "NOT_MATCHED" });
       conversation = await getOrCreateConversation(sender._id, receiver._id);
+    }
+        try {
+      const { ok, reasons } = await moderateText(text);
+      if (!ok) {
+        console.warn(`[MODERATION] Poruka odbijena (user ${senderId}):`, reasons);
+        return res.status(422).json(rejectionPayload('text', reasons));
+      }
+    } catch (err) {
+      if (err instanceof ModerationUnavailableError) {
+        console.error('[MODERATION] Sightengine nedostupan:', err.message);
+        return res.status(503).json(unavailablePayload('text'));
+      }
+      throw err;
     }
 
     const newMessage = await Message.create({

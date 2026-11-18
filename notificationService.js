@@ -145,7 +145,6 @@ async function sendLikeNotification(userToNotify, likerUser) {
       {
         userId: likerUser._id.toString(),
         userName: likerUser.fullName || "",
-        userAvatar: likerUser.avatar || "",
         type: "LIKE",
       }
     );

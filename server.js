@@ -214,13 +214,13 @@ io.on("connection", (socket) => {
 
   // ❤️ REACT TO MESSAGE
   // ==================================================
-  // Samo primalac poruke sme da je lajkuje. Autoru poruke stiže uživo
-  // "messageReaction" i (samo kad se srce postavi) push notifikacija.
+  // Samo primalac poruke sme da je lajkuje, i to samo jednom (nema skidanja srca).
+  // Autoru poruke stiže uživo "messageReaction" i push notifikacija.
   socket.on("reactToMessage", async ({ chatId, messageId, liked } = {}, callback) => {
     const reply = (data) => typeof callback === "function" && callback(data);
 
     try {
-      if (!mongoose.Types.ObjectId.isValid(messageId) || typeof liked !== "boolean") {
+      if (!mongoose.Types.ObjectId.isValid(messageId) || liked !== true) {
         return reply({ status: "error", message: "Nevalidan zahtev" });
       }
 

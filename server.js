@@ -8,7 +8,11 @@ const http = require("http");
 const { Server } = require("socket.io");
 const jwt = require("jsonwebtoken");
 const User = require('./models/User');
-const { sendMatchNotification, sendMessageNotification } = require('./notificationService');
+const {
+  sendMatchNotification,
+  sendMessageNotification,
+  sendReactionNotification,
+} = require('./notificationService');
 // Moderacija sadržaja (Sightengine)
 const {
   moderateText,
@@ -207,6 +211,75 @@ io.on("connection", (socket) => {
       return reply({ status: "error", message: "Server error" });
     }
   });
+
+  // ❤️ REACT TO MESSAGE
+  // ==================================================
+  // Samo primalac poruke sme da je lajkuje. Autoru poruke stiže uživo
+  // "messageReaction" i (samo kad se srce postavi) push notifikacija.
+  socket.on("reactToMessage", async ({ chatId, messageId, liked } = {}, callback) => {
+    const reply = (data) => typeof callback === "function" && callback(data);
+
+    try {
+      if (!mongoose.Types.ObjectId.isValid(messageId) || typeof liked !== "boolean") {
+        return reply({ status: "error", message: "Nevalidan zahtev" });
+      }
+
+      // Vraća staro stanje (new: false) da znamo da li je promena stvarna
+      const before = await Message.findOneAndUpdate(
+        { _id: messageId, receiver: userId },
+        { liked },
+        { new: false }
+      );
+      if (!before || String(before.conversationId) !== String(chatId)) {
+        // Ako chatId ne odgovara, poništi izmenu
+        if (before) await Message.updateOne({ _id: messageId }, { liked: !!before.liked });
+        return reply({ status: "error", message: "Poruka nije pronađena" });
+      }
+
+      const senderId = String(before.sender);
+
+      const [liker, author] = await Promise.all([
+        User.findById(userId).select("fullName avatar blockedUsers"),
+        User.findById(senderId).select("fullName fcmToken notifications blockedUsers"),
+      ]);
+
+      // Blok u bilo kom smeru: poništi izmenu i javi grešku
+      const blocked =
+        !liker ||
+        !author ||
+        (liker.blockedUsers || []).some((id) => id.equals(author._id)) ||
+        (author.blockedUsers || []).some((id) => id.equals(liker._id));
+      if (blocked) {
+        await Message.updateOne({ _id: messageId }, { liked: !!before.liked });
+        return reply({ status: "error", message: "Blokiran", code: "BLOCKED" });
+      }
+
+      // Uživo kod autora poruke
+      const authorSockets = onlineUsers.get(senderId);
+      if (authorSockets) {
+        authorSockets.forEach((sid) =>
+          io.to(sid).emit("messageReaction", {
+            messageId: String(before._id),
+            conversationId: String(before.conversationId),
+            liked,
+          })
+        );
+      }
+
+      // Push samo kad se srce stvarno postavi (ne pri skidanju ni pri ponovljenom slanju)
+      if (liked && !before.liked && author.fcmToken) {
+        sendReactionNotification(author, liker, before.text, before.conversationId).catch((e) =>
+          console.error("❌ Greška pri slanju push notifikacije:", e.message)
+        );
+      }
+
+      return reply({ status: "ok" });
+    } catch (err) {
+      console.error("❌ reactToMessage error", err);
+      return reply({ status: "error", message: "Server error" });
+    }
+  });
+
   // ================= JOIN CHAT =================
   socket.on("joinChat", (chatId) => {
     socket.join(chatId);

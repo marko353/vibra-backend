@@ -16,6 +16,9 @@ const messageSchema = new mongoose.Schema({
     ref: 'User',
     required: true,
   },
+  liked: {
+     type: Boolean,
+      default: false },
   text: {
     type: String,
     required: true,

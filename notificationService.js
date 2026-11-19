@@ -153,10 +153,38 @@ async function sendLikeNotification(userToNotify, likerUser) {
     throw error;
   }
 }
+async function sendReactionNotification(userToNotify, liker, messageText, conversationId) {
+  try {
+    if (!userToNotify?.fcmToken || !conversationId) return;
+
+    // Koristi isto podešavanje kao poruke, da ne uvodimo novi prekidač
+    if (!isNotificationEnabled(userToNotify, "messages")) return;
+
+    const snippet = (messageText || "").slice(0, 60);
+
+    await sendPushNotification(
+      userToNotify.fcmToken,
+      liker.fullName || "Someone",
+      `❤️ Liked your message: ${snippet}`,
+      {
+        chatId: conversationId.toString(),
+        receiverId: userToNotify._id.toString(),
+        userId: liker._id.toString(),
+        userName: liker.fullName || "",
+        userAvatar: liker.avatar || "",
+        type: "MESSAGE_LIKE",
+      }
+    );
+  } catch (error) {
+    console.error("[FCM] sendReactionNotification error:", error);
+    throw error;
+  }
+}
 
 module.exports = {
   sendPushNotification,
   sendMatchNotification,
   sendMessageNotification,
   sendLikeNotification,
+  sendReactionNotification,
 };

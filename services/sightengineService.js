@@ -1,8 +1,14 @@
 // sightengineService.js (backend, Node 18+)
-// Poziva Sightengine API i vraća odluku: { ok, reasons }.
+// Poziva Sightengine API i vraća odluku: { ok, reasons, matches }.
 // Ključevi idu samo u env promenljive na serveru, nikad u mobilnu aplikaciju:
 //   SIGHTENGINE_API_USER, SIGHTENGINE_API_SECRET
-// Opciono: SIGHTENGINE_TEXT_LANG (podrazumevano 'en,sr')
+// Opciono: SIGHTENGINE_TEXT_LANG (podrazumevano 'en')
+// Opciono: SIGHTENGINE_DEBUG=1 (loguje sirov odgovor API-ja, samo za testiranje)
+//
+// Napomena: Sightengine ne podržava srpski/hrvatski/bosanski, pa se za njih
+// koristi lokalna lista (./serbianProfanity) pre poziva API-ja.
+
+const { checkSerbianProfanity } = require('./serbianProfanity');
 
 const IMAGE_URL = 'https://api.sightengine.com/1.0/check.json';
 const TEXT_URL = 'https://api.sightengine.com/1.0/text/check.json';
@@ -64,6 +70,9 @@ async function post(url, form, timeoutMs) {
   try {
     const res = await fetch(url, { method: 'POST', body: form, signal: controller.signal });
     const json = await res.json().catch(() => null);
+    if (process.env.SIGHTENGINE_DEBUG) {
+      console.log('[sightengine raw]', url, JSON.stringify(json));
+    }
     if (!res.ok || !json || json.status !== 'success') {
       throw new ModerationUnavailableError(json?.error?.message || `HTTP ${res.status}`);
     }
@@ -110,42 +119,71 @@ async function moderateImage(buffer, filename = 'photo.jpg', mimetype = 'image/j
   return { ok: reasons.length === 0, reasons };
 }
 
+// Vraća razloge i pogođene reči (matches), da se u logu vidi šta je tačno okinulo odbijanje.
 function evaluateText(r) {
   const reasons = [];
+  const matches = [];
   for (const category of TEXT_REJECT_CATEGORIES) {
-    const matches = r[category]?.matches;
-    if (!Array.isArray(matches) || matches.length === 0) continue;
+    const found = r[category]?.matches;
+    if (!Array.isArray(found) || found.length === 0) continue;
 
     if (category === 'profanity') {
       // 'low' intenzitet ignorišemo, odbijamo medium i high.
-      if (matches.some((m) => m.intensity !== 'low')) reasons.push('profanity');
+      const strong = found.filter((m) => m.intensity !== 'low');
+      if (strong.length > 0) {
+        reasons.push('profanity');
+        strong.forEach((m) =>
+          matches.push({
+            source: 'sightengine',
+            category,
+            type: m.type,
+            intensity: m.intensity,
+            word: m.match ?? m.text ?? null,
+          })
+        );
+      }
     } else {
-      reasons.push(category === 'content-trade' || category === 'money-transaction' ? 'spam' : category);
+      const reason = category === 'content-trade' || category === 'money-transaction' ? 'spam' : category;
+      reasons.push(reason);
+      found.forEach((m) =>
+        matches.push({ source: 'sightengine', category, intensity: m.intensity, word: m.match ?? m.text ?? null })
+      );
     }
   }
-  return [...new Set(reasons)];
+  return { reasons: [...new Set(reasons)], matches };
 }
+
+// Brojevi zalepljeni na kraj reči ("Test3", "Marko92") se ne šalju Sightengine-u:
+// njegovo prepoznavanje prerušenih reči ih može pročitati kao slova i lažno odbiti poruku.
+// Psovka sa brojem na kraju i dalje se hvata jer slova ostaju. Brojevi usred reči
+// ("sh1t", "ab12cd") ostaju netaknuti: lookahead zabranjuje i slovo i cifru iza broja.
+const stripTrailingDigits = (text) => text.replace(/(?<=\p{L})\d+(?![\p{L}\d])/gu, '');
 
 /**
  * @param {string} text
- * @returns {Promise<{ ok: boolean, reasons: string[] }>}
+ * @returns {Promise<{ ok: boolean, reasons: string[], matches: object[] }>}
  */
 async function moderateText(text) {
   const trimmed = (text || '').trim();
-  if (!trimmed) return { ok: true, reasons: [] };
+  if (!trimmed) return { ok: true, reasons: [], matches: [] };
 
+  // 1. Lokalna lista za srpski/hrvatski/bosanski (bez poziva API-ja)
+  const local = checkSerbianProfanity(trimmed);
+  if (!local.ok) return local;
+
+  // 2. Sightengine za ostale jezike i kategorije
   const { api_user, api_secret } = credentials();
   const form = new FormData();
-  form.append('text', trimmed);
-  form.append('lang', process.env.SIGHTENGINE_TEXT_LANG || 'en,sr');
+  form.append('text', stripTrailingDigits(trimmed));
+  form.append('lang', process.env.SIGHTENGINE_TEXT_LANG || 'en');
   form.append('mode', 'rules');
   form.append('categories', TEXT_CATEGORIES);
   form.append('api_user', api_user);
   form.append('api_secret', api_secret);
 
   const result = await post(TEXT_URL, form, TEXT_TIMEOUT_MS);
-  const reasons = evaluateText(result);
-  return { ok: reasons.length === 0, reasons };
+  const { reasons, matches } = evaluateText(result);
+  return { ok: reasons.length === 0, reasons, matches };
 }
 
 // Response bodies matching what the app expects. Use the same objects for

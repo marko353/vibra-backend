@@ -107,7 +107,9 @@ io.on("connection", (socket) => {
 
   // 📩 SEND MESSAGE
   // ==================================================
-   socket.on("sendMessage", async ({ receiverId, text } = {}, callback) => {
+  // replyToId (opciono): ID poruke na koju se odgovara. Server sam pravi citat
+  // (tekst i autor originala), klijentu se ne veruje.
+  socket.on("sendMessage", async ({ receiverId, text, replyToId } = {}, callback) => {
     const reply = (data) => typeof callback === "function" && callback(data);
 
     try {
@@ -163,11 +165,29 @@ io.on("connection", (socket) => {
         throw modErr;
       }
 
+      // Citat: original mora da pripada istoj konverzaciji
+      let replyTo;
+      if (replyToId && mongoose.Types.ObjectId.isValid(replyToId)) {
+        const original = await Message.findOne({
+          _id: replyToId,
+          conversationId: conversation._id,
+        }).select("text type sender");
+
+        if (original) {
+          replyTo = {
+            messageId: original._id,
+            text: original.type === "gif" ? "GIF" : String(original.text || "").slice(0, 120),
+            sender: String(original.sender), // autor ORIGINALA
+          };
+        }
+      }
+
       const message = await Message.create({
         conversationId: conversation._id,
         sender: userId,
         receiver: receiverId,
         text: cleanText,
+        ...(replyTo && { replyTo }),
       });
 
       conversation.messages.push(message._id);
@@ -190,6 +210,7 @@ io.on("connection", (socket) => {
         conversationId: message.conversationId.toString(),
         sender: message.sender.toString(),
         receiver: message.receiver.toString(),
+        ...(replyTo && { replyTo: { ...replyTo, messageId: String(replyTo.messageId) } }),
       };
 
       // Socket primaocu

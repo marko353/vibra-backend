@@ -19,6 +19,11 @@ const messageSchema = new mongoose.Schema({
   liked: {
      type: Boolean,
       default: false },
+      replyTo: {
+  messageId: { type: mongoose.Schema.Types.ObjectId, ref: "Message" },
+  text: String,
+  sender: String, 
+},
   text: {
     type: String,
     required: true,

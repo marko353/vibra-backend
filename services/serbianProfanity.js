@@ -14,7 +14,7 @@ const SUBSTRINGS = [
   'pizd',
   'jebem', 'jebes', 'jebo', 'jebi', 'jebac', 'jebeni', 'jebeno', 'jebiga', 'jebote',
   'govn',
-  'drolj',
+  'droljo',
 ];
 
 // Reč se odbija ako POČINJE ovim (npr. "sranje", "sranja")
@@ -23,7 +23,7 @@ const PREFIXES = ['sran', 'pederc'];
 // Reč se odbija samo ako je TAČNO ovakva (za reči koje bi inače pogodile bezazlene)
 const EXACT = new Set([
   'picka', 'picku', 'pickom', 'pickice', 'pickica', 'pickin',
-  'peder', 'pedera', 'pedere', 'pederu', 'pederi',
+  'peder', 'pedera', 'pedere', 'pederu', 'pederi','picko','picke'
 ]);
 
 const CYRILLIC = {

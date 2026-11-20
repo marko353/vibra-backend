@@ -125,8 +125,9 @@ io.on("connection", (socket) => {
       }
 
       // Pošiljalac i primalac
+      // profilePictures je dodat jer avatar ne mora da postoji kao polje "avatar"
       const [sender, receiver] = await Promise.all([
-        User.findById(userId).select("fullName avatar blockedUsers matches"),
+        User.findById(userId).select("fullName avatar profilePictures blockedUsers matches"),
         User.findById(receiverId).select("fullName fcmToken notifications blockedUsers"),
       ]);
       if (!sender || !receiver) {
@@ -204,12 +205,19 @@ io.on("connection", (socket) => {
       conversation.markModified("participants");
       await conversation.save();
 
+      // Podaci pošiljaoca idu uz poruku, da klijent ne zavisi od params rute
+      // za avatar i ime druge osobe.
+      const senderAvatar =
+        sender.avatar || (Array.isArray(sender.profilePictures) ? sender.profilePictures[0] : undefined);
+
       const payload = {
         ...message.toObject(),
         _id: message._id.toString(),
         conversationId: message.conversationId.toString(),
         sender: message.sender.toString(),
         receiver: message.receiver.toString(),
+        senderName: sender.fullName,
+        senderAvatar,
         ...(replyTo && { replyTo: { ...replyTo, messageId: String(replyTo.messageId) } }),
       };
 

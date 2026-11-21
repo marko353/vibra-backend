@@ -1,3 +1,5 @@
+// models/Message.js
+
 const mongoose = require('mongoose');
 
 const messageSchema = new mongoose.Schema({
@@ -17,16 +19,34 @@ const messageSchema = new mongoose.Schema({
     required: true,
   },
   liked: {
-     type: Boolean,
-      default: false },
-      replyTo: {
-  messageId: { type: mongoose.Schema.Types.ObjectId, ref: "Message" },
-  text: String,
-  sender: String, 
-},
+    type: Boolean,
+    default: false,
+  },
+  // Citat poruke na koju se odgovara
+  replyTo: {
+    messageId: { type: mongoose.Schema.Types.ObjectId, ref: "Message" },
+    text: String,
+    sender: String,
+  },
+  // Vrsta poruke: obična ili GIF (stare poruke dobijaju "text")
+  type: {
+    type: String,
+    enum: ["text", "gif"],
+    default: "text",
+  },
+  // Podaci o GIF-u (samo za type: "gif")
+  gif: {
+    url: String,
+    width: Number,
+    height: Number,
+  },
   text: {
     type: String,
-    required: true,
+    // GIF poruka nema tekst
+    required: function () {
+      return this.type !== "gif";
+    },
+    default: "",
   },
 }, { timestamps: true });
 

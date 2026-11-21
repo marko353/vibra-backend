@@ -79,6 +79,22 @@ io.use((socket, next) => {
   }
 });
 
+// ================= GIF HELPER =================
+// Prihvata samo https linkove sa Klipy domena, da klijent ne može da pošalje
+// proizvoljan URL. Vraća { url, width, height } ili null ako GIF nije validan.
+function sanitizeGif(gif) {
+  if (!gif || typeof gif.url !== "string" || gif.url.length > 500) return null;
+  try {
+    const u = new URL(gif.url);
+    const hostOk = u.hostname === "klipy.com" || u.hostname.endsWith(".klipy.com");
+    if (u.protocol !== "https:" || !hostOk) return null;
+    const dim = (n) => (Number.isFinite(n) && n > 0 && n < 10000 ? Math.round(n) : null);
+    return { url: gif.url, width: dim(gif.width), height: dim(gif.height) };
+  } catch {
+    return null;
+  }
+}
+
 // ================= SOCKET CONNECTION =================
 io.on("connection", (socket) => {
   const userId = socket.userId;
@@ -109,9 +125,10 @@ io.on("connection", (socket) => {
 
   // 📩 SEND MESSAGE
   // ==================================================
+  // Šalje se ili tekst (text) ili GIF (gif: { url, width, height }).
   // replyToId (opciono): ID poruke na koju se odgovara. Server sam pravi citat
   // (tekst i autor originala), klijentu se ne veruje.
-  socket.on("sendMessage", async ({ receiverId, text, replyToId } = {}, callback) => {
+  socket.on("sendMessage", async ({ receiverId, text, gif, replyToId } = {}, callback) => {
     const reply = (data) => typeof callback === "function" && callback(data);
 
     try {
@@ -119,9 +136,17 @@ io.on("connection", (socket) => {
       if (!receiverId || !mongoose.Types.ObjectId.isValid(receiverId)) {
         return reply({ status: "error", message: "Nevalidan primalac" });
       }
+
+      const gifData = sanitizeGif(gif);
+      const isGif = !!gifData;
+      if (gif && !gifData) return reply({ status: "error", message: "Nevalidan GIF" });
+
       const cleanText = typeof text === "string" ? text.trim() : "";
-      if (!cleanText) return reply({ status: "error", message: "Poruka ne može biti prazna" });
-      if (cleanText.length > 2000) return reply({ status: "error", message: "Poruka je predugačka" });
+      if (!isGif) {
+        if (!cleanText) return reply({ status: "error", message: "Poruka ne može biti prazna" });
+        if (cleanText.length > 2000) return reply({ status: "error", message: "Poruka je predugačka" });
+      }
+
       if (String(receiverId) === userId) {
         return reply({ status: "error", message: "Nevalidan primalac" });
       }
@@ -154,18 +179,21 @@ io.on("connection", (socket) => {
       // Moderacija teksta: odbijena poruka se ne čuva i ne šalje primaocu.
       // Aplikacija iz odgovora vidi 'rejected' (Toast) ili 'MODERATION_UNAVAILABLE'
       // (poruka ostaje kao neposlata sa "Tap to retry").
-      try {
-        const { ok, reasons } = await moderateText(cleanText);
-        if (!ok) {
-          console.warn(`[MODERATION] Poruka odbijena (user ${userId}):`, reasons);
-          return reply(rejectionPayload("text", reasons));
+      // GIF-ovi se ne moderišu.
+      if (!isGif) {
+        try {
+          const { ok, reasons } = await moderateText(cleanText);
+          if (!ok) {
+            console.warn(`[MODERATION] Poruka odbijena (user ${userId}):`, reasons);
+            return reply(rejectionPayload("text", reasons));
+          }
+        } catch (modErr) {
+          if (modErr instanceof ModerationUnavailableError) {
+            console.error("[MODERATION] Sightengine nedostupan:", modErr.message);
+            return reply(unavailablePayload("text"));
+          }
+          throw modErr;
         }
-      } catch (modErr) {
-        if (modErr instanceof ModerationUnavailableError) {
-          console.error("[MODERATION] Sightengine nedostupan:", modErr.message);
-          return reply(unavailablePayload("text"));
-        }
-        throw modErr;
       }
 
       // Citat: original mora da pripada istoj konverzaciji
@@ -189,7 +217,9 @@ io.on("connection", (socket) => {
         conversationId: conversation._id,
         sender: userId,
         receiver: receiverId,
-        text: cleanText,
+        type: isGif ? "gif" : "text",
+        text: isGif ? "" : cleanText,
+        ...(isGif && { gif: gifData }),
         ...(replyTo && { replyTo }),
       });
 
@@ -231,7 +261,12 @@ io.on("connection", (socket) => {
 
       // Push (best effort, ne blokira odgovor)
       if (receiver.fcmToken) {
-        sendMessageNotification(receiver, sender, cleanText, conversation._id).catch((e) =>
+        sendMessageNotification(
+          receiver,
+          sender,
+          isGif ? "GIF" : cleanText,
+          conversation._id
+        ).catch((e) =>
           console.error("❌ Greška pri slanju push notifikacije:", e.message)
         );
       }
@@ -299,7 +334,12 @@ io.on("connection", (socket) => {
 
       // Push samo kad se srce stvarno postavi (ne pri skidanju ni pri ponovljenom slanju)
       if (liked && !before.liked && author.fcmToken) {
-        sendReactionNotification(author, liker, before.text, before.conversationId).catch((e) =>
+        sendReactionNotification(
+          author,
+          liker,
+          before.type === "gif" ? "GIF" : before.text,
+          before.conversationId
+        ).catch((e) =>
           console.error("❌ Greška pri slanju push notifikacije:", e.message)
         );
       }

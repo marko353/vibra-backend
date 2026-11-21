@@ -8,6 +8,7 @@ const http = require("http");
 const { Server } = require("socket.io");
 const jwt = require("jsonwebtoken");
 const User = require('./models/User');
+const gifRoutes = require("./routes/gifs");
 const {
   sendMatchNotification,
   sendMessageNotification,
@@ -55,6 +56,7 @@ mongoose
 // ================= ROUTES =================
 app.use("/api/auth", authRoutes);
 app.use("/api/user", userRoutes);
+app.use("/api/gifs", gifRoutes);
 
 // ================= SOCKET AUTH =================
 io.use((socket, next) => {

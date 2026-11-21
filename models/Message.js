@@ -34,12 +34,10 @@ const messageSchema = new mongoose.Schema({
     enum: ["text", "gif"],
     default: "text",
   },
-  // Podaci o GIF-u (samo za type: "gif")
-  gif: {
-    url: String,
-    width: Number,
-    height: Number,
-  },
+  // Podaci o GIF-u (samo za type: "gif"). Ravna polja jer ih aplikacija tako čita.
+  gifUrl: String,
+  gifWidth: Number,
+  gifHeight: Number,
   text: {
     type: String,
     // GIF poruka nema tekst

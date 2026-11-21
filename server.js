@@ -132,7 +132,6 @@ io.on("connection", (socket) => {
     const reply = (data) => typeof callback === "function" && callback(data);
 
     try {
-      console.log("[sendMessage] payload:", JSON.stringify({ receiverId, text, gif, replyToId }));
       // Validacija ulaza
       if (!receiverId || !mongoose.Types.ObjectId.isValid(receiverId)) {
         return reply({ status: "error", message: "Nevalidan primalac" });
@@ -220,7 +219,11 @@ io.on("connection", (socket) => {
         receiver: receiverId,
         type: isGif ? "gif" : "text",
         text: isGif ? "" : cleanText,
-        ...(isGif && { gif: gifData }),
+        ...(isGif && {
+          gifUrl: gifData.url,
+          gifWidth: gifData.width,
+          gifHeight: gifData.height,
+        }),
         ...(replyTo && { replyTo }),
       });
 

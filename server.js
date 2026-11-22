@@ -95,6 +95,33 @@ function sanitizeGif(gif) {
   }
 }
 
+// ================= RATE LIMIT (sendMessage) =================
+// Najviše RATE_MAX poruka u prozoru od RATE_WINDOW_MS po korisniku (važi za sve njegove
+// uređaje). Čuva se u memoriji, pa se resetuje restartom servera.
+const RATE_MAX = 15;
+const RATE_WINDOW_MS = 10 * 1000;
+const sendLog = new Map(); // userId -> [timestamp, ...]
+
+function isRateLimited(userId) {
+  const now = Date.now();
+  const recent = (sendLog.get(userId) || []).filter((t) => now - t < RATE_WINDOW_MS);
+  if (recent.length >= RATE_MAX) {
+    sendLog.set(userId, recent);
+    return true;
+  }
+  recent.push(now);
+  sendLog.set(userId, recent);
+  return false;
+}
+
+// Povremeno čišćenje da mapa ne raste
+setInterval(() => {
+  const now = Date.now();
+  for (const [uid, times] of sendLog) {
+    if (!times.length || now - times[times.length - 1] > RATE_WINDOW_MS) sendLog.delete(uid);
+  }
+}, 60 * 1000).unref();
+
 // ================= SOCKET CONNECTION =================
 io.on("connection", (socket) => {
   const userId = socket.userId;
@@ -121,8 +148,6 @@ io.on("connection", (socket) => {
     }))
   );
 
-  io.emit("updateOnlineUsers", Array.from(onlineUsers.keys()));
-
   // 📩 SEND MESSAGE
   // ==================================================
   // Šalje se ili tekst (text) ili GIF (gif: { url, width, height }).
@@ -130,6 +155,15 @@ io.on("connection", (socket) => {
   // (tekst i autor originala), klijentu se ne veruje.
   socket.on("sendMessage", async ({ receiverId, text, gif, replyToId } = {}, callback) => {
     const reply = (data) => typeof callback === "function" && callback(data);
+
+    // Zaštita od zatrpavanja: provera pre bilo kakvog rada sa bazom
+    if (isRateLimited(userId)) {
+      return reply({
+        status: "error",
+        message: "Šaljete poruke prebrzo",
+        code: "RATE_LIMITED",
+      });
+    }
 
     try {
       // Validacija ulaza
@@ -371,7 +405,6 @@ io.on("connection", (socket) => {
 
       if (sockets.size === 0) {
         onlineUsers.delete(userId);
-        io.emit("updateOnlineUsers", Array.from(onlineUsers.keys()));
       }
     }
 

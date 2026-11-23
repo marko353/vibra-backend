@@ -9,6 +9,7 @@ const { Server } = require("socket.io");
 const jwt = require("jsonwebtoken");
 const User = require('./models/User');
 const gifRoutes = require("./routes/gifs");
+const voiceRoutes = require("./routes/voice");
 const {
   sendMatchNotification,
   sendMessageNotification,
@@ -57,6 +58,7 @@ mongoose
 app.use("/api/auth", authRoutes);
 app.use("/api/user", userRoutes);
 app.use("/api/gifs", gifRoutes);
+app.use("/api/voice", voiceRoutes);
 
 // ================= SOCKET AUTH =================
 io.use((socket, next) => {
@@ -93,6 +95,46 @@ function sanitizeGif(gif) {
   } catch {
     return null;
   }
+}
+
+// ================= VOICE HELPER =================
+// Klijent prvo uploaduje snimak na POST /api/voice/upload, pa šalje { url, duration }.
+// Prihvata samo Cloudinary URL iz našeg naloga i iz foldera voice_messages/<userId>,
+// tako da pošiljalac ne može da podmetne tuđ snimak ni proizvoljan link.
+const MAX_VOICE_SECONDS = 120;
+
+function sanitizeVoice(voice, userId) {
+  if (!voice || typeof voice.url !== "string" || voice.url.length > 500) return null;
+  const cloudName = process.env.CLOUDINARY_CLOUD_NAME;
+  if (!cloudName) return null;
+  try {
+    const u = new URL(voice.url);
+    if (u.protocol !== "https:" || u.hostname !== "res.cloudinary.com") return null;
+
+    const prefix = `/${cloudName}/video/upload/`;
+    if (!u.pathname.startsWith(prefix)) return null;
+
+    // ostatak putanje: [v123456/]voice_messages/<userId>/<id>.<ext>
+    const rest = u.pathname.slice(prefix.length).replace(/^v\d+\//, "");
+    if (rest.includes("..") || rest.includes("%")) return null;
+    if (!rest.startsWith(`voice_messages/${userId}/`)) return null;
+
+    const d = Number(voice.duration);
+    if (!Number.isFinite(d) || d <= 0) return null;
+    return {
+      url: voice.url,
+      duration: Math.min(Math.max(Math.round(d), 1), MAX_VOICE_SECONDS),
+    };
+  } catch {
+    return null;
+  }
+}
+
+// Kratak tekst za citate, push i preview
+function previewText(type, text) {
+  if (type === "gif") return "GIF";
+  if (type === "voice") return "🎤 Glasovna poruka";
+  return String(text || "");
 }
 
 // ================= RATE LIMIT (sendMessage) =================
@@ -150,10 +192,12 @@ io.on("connection", (socket) => {
 
   // 📩 SEND MESSAGE
   // ==================================================
-  // Šalje se ili tekst (text) ili GIF (gif: { url, width, height }).
+  // Šalje se ili tekst (text), ili GIF (gif: { url, width, height }),
+  // ili glasovna poruka (voice: { url, duration }) čiji je snimak prethodno
+  // uploadovan preko POST /api/voice/upload.
   // replyToId (opciono): ID poruke na koju se odgovara. Server sam pravi citat
   // (tekst i autor originala), klijentu se ne veruje.
-  socket.on("sendMessage", async ({ receiverId, text, gif, replyToId } = {}, callback) => {
+  socket.on("sendMessage", async ({ receiverId, text, gif, voice, replyToId } = {}, callback) => {
     const reply = (data) => typeof callback === "function" && callback(data);
 
     // Zaštita od zatrpavanja: provera pre bilo kakvog rada sa bazom
@@ -172,11 +216,18 @@ io.on("connection", (socket) => {
       }
 
       const gifData = sanitizeGif(gif);
-      const isGif = !!gifData;
+      const voiceData = sanitizeVoice(voice, userId);
       if (gif && !gifData) return reply({ status: "error", message: "Nevalidan GIF" });
+      if (voice && !voiceData) return reply({ status: "error", message: "Nevalidna glasovna poruka" });
+      if (gifData && voiceData) return reply({ status: "error", message: "Nevalidan zahtev" });
+
+      const isGif = !!gifData;
+      const isVoice = !!voiceData;
+      const isText = !isGif && !isVoice;
+      const msgType = isGif ? "gif" : isVoice ? "voice" : "text";
 
       const cleanText = typeof text === "string" ? text.trim() : "";
-      if (!isGif) {
+      if (isText) {
         if (!cleanText) return reply({ status: "error", message: "Poruka ne može biti prazna" });
         if (cleanText.length > 2000) return reply({ status: "error", message: "Poruka je predugačka" });
       }
@@ -213,8 +264,8 @@ io.on("connection", (socket) => {
       // Moderacija teksta: odbijena poruka se ne čuva i ne šalje primaocu.
       // Aplikacija iz odgovora vidi 'rejected' (Toast) ili 'MODERATION_UNAVAILABLE'
       // (poruka ostaje kao neposlata sa "Tap to retry").
-      // GIF-ovi se ne moderišu.
-      if (!isGif) {
+      // GIF-ovi i glasovne poruke se ne moderišu.
+      if (isText) {
         try {
           const { ok, reasons } = await moderateText(cleanText);
           if (!ok) {
@@ -241,7 +292,7 @@ io.on("connection", (socket) => {
         if (original) {
           replyTo = {
             messageId: original._id,
-            text: original.type === "gif" ? "GIF" : String(original.text || "").slice(0, 120),
+            text: previewText(original.type, original.text).slice(0, 120),
             sender: String(original.sender), // autor ORIGINALA
           };
         }
@@ -251,12 +302,16 @@ io.on("connection", (socket) => {
         conversationId: conversation._id,
         sender: userId,
         receiver: receiverId,
-        type: isGif ? "gif" : "text",
-        text: isGif ? "" : cleanText,
+        type: msgType,
+        text: isText ? cleanText : "",
         ...(isGif && {
           gifUrl: gifData.url,
           gifWidth: gifData.width,
           gifHeight: gifData.height,
+        }),
+        ...(isVoice && {
+          voiceUrl: voiceData.url,
+          voiceDuration: voiceData.duration,
         }),
         ...(replyTo && { replyTo }),
       });
@@ -302,7 +357,7 @@ io.on("connection", (socket) => {
         sendMessageNotification(
           receiver,
           sender,
-          isGif ? "GIF" : cleanText,
+          previewText(msgType, cleanText),
           conversation._id
         ).catch((e) =>
           console.error("❌ Greška pri slanju push notifikacije:", e.message)
@@ -375,7 +430,7 @@ io.on("connection", (socket) => {
         sendReactionNotification(
           author,
           liker,
-          before.type === "gif" ? "GIF" : before.text,
+          previewText(before.type, before.text),
           before.conversationId
         ).catch((e) =>
           console.error("❌ Greška pri slanju push notifikacije:", e.message)

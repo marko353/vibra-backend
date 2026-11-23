@@ -1342,8 +1342,12 @@ exports.getMatchesAndConversations = async (req, res) => {
         existingConversations.push({
           chatId: conv._id.toString(),
           user: chatUser,
-          lastMessage: {
-            text: lastMsg.text || '...',
+   lastMessage: {
+            text:
+              lastMsg.type === 'voice'
+                ? '🎤 Glasovna poruka'
+                : lastMsg.text || '...',
+            type: lastMsg.type || 'text',
             timestamp: lastMsg.createdAt,
           },
           has_unread: !!userStatus.has_unread_messages,

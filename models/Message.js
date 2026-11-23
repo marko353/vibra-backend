@@ -28,21 +28,24 @@ const messageSchema = new mongoose.Schema({
     text: String,
     sender: String,
   },
-  // Vrsta poruke: obična ili GIF (stare poruke dobijaju "text")
+  // Vrsta poruke: obična, GIF ili glasovna (stare poruke dobijaju "text")
   type: {
     type: String,
-    enum: ["text", "gif"],
+    enum: ["text", "gif", "voice"],
     default: "text",
   },
   // Podaci o GIF-u (samo za type: "gif"). Ravna polja jer ih aplikacija tako čita.
   gifUrl: String,
   gifWidth: Number,
   gifHeight: Number,
+  // Podaci o glasovnoj poruci (samo za type: "voice"), trajanje u sekundama
+  voiceUrl: String,
+  voiceDuration: Number,
   text: {
     type: String,
-    // GIF poruka nema tekst
+    // GIF i glasovna poruka nemaju tekst
     required: function () {
-      return this.type !== "gif";
+      return this.type === "text";
     },
     default: "",
   },

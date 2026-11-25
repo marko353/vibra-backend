@@ -98,10 +98,23 @@ function sanitizeGif(gif) {
 }
 
 // ================= VOICE HELPER =================
-// Klijent prvo uploaduje snimak na POST /api/voice/upload, pa šalje { url, duration }.
+// Klijent prvo uploaduje snimak na POST /api/voice/upload, pa šalje { url, duration, waveform? }.
 // Prihvata samo Cloudinary URL iz našeg naloga i iz foldera voice_messages/<userId>,
 // tako da pošiljalac ne može da podmetne tuđ snimak ni proizvoljan link.
 const MAX_VOICE_SECONDS = 120;
+const MAX_WAVEFORM_BARS = 48;
+
+function sanitizeWaveform(raw) {
+  if (!Array.isArray(raw) || raw.length === 0 || raw.length > MAX_WAVEFORM_BARS) {
+    return undefined;
+  }
+  const clean = [];
+  for (const v of raw) {
+    if (typeof v !== "number" || !Number.isFinite(v)) return undefined;
+    clean.push(Math.min(100, Math.max(0, Math.round(v))));
+  }
+  return clean;
+}
 
 function sanitizeVoice(voice, userId) {
   if (!voice || typeof voice.url !== "string" || voice.url.length > 500) return null;
@@ -121,9 +134,11 @@ function sanitizeVoice(voice, userId) {
 
     const d = Number(voice.duration);
     if (!Number.isFinite(d) || d <= 0) return null;
+    const waveform = sanitizeWaveform(voice.waveform);
     return {
       url: voice.url,
       duration: Math.min(Math.max(Math.round(d), 1), MAX_VOICE_SECONDS),
+      ...(waveform && { waveform }),
     };
   } catch {
     return null;
@@ -193,7 +208,7 @@ io.on("connection", (socket) => {
   // 📩 SEND MESSAGE
   // ==================================================
   // Šalje se ili tekst (text), ili GIF (gif: { url, width, height }),
-  // ili glasovna poruka (voice: { url, duration }) čiji je snimak prethodno
+  // ili glasovna poruka (voice: { url, duration, waveform? }) čiji je snimak prethodno
   // uploadovan preko POST /api/voice/upload.
   // replyToId (opciono): ID poruke na koju se odgovara. Server sam pravi citat
   // (tekst i autor originala), klijentu se ne veruje.
@@ -312,6 +327,7 @@ io.on("connection", (socket) => {
         ...(isVoice && {
           voiceUrl: voiceData.url,
           voiceDuration: voiceData.duration,
+          ...(voiceData.waveform && { voiceWaveform: voiceData.waveform }),
         }),
         ...(replyTo && { replyTo }),
       });

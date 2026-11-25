@@ -41,6 +41,10 @@ const messageSchema = new mongoose.Schema({
   // Podaci o glasovnoj poruci (samo za type: "voice"), trajanje u sekundama
   voiceUrl: String,
   voiceDuration: Number,
+  voiceWaveform: {
+    type: [Number],
+    default: undefined,
+  },
   text: {
     type: String,
     // GIF i glasovna poruka nemaju tekst
